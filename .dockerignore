@@ -1,0 +1,10 @@
+**/bin
+**/obj
+**/.local
+**/TestResults
+.git
+.env*
+deployment/runtime
+*.pfx
+*.pem
+*.key

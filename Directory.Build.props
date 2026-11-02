@@ -1,0 +1,2 @@
+<Project><PropertyGroup><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors><DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**;**/.local/**</DefaultItemExcludes></PropertyGroup></Project>
+

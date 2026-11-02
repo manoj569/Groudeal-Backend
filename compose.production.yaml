@@ -1,0 +1,82 @@
+# Reviewed target-specific values and valid certificates/secrets are required.
+# External PostgreSQL is intentional; no database port is published here.
+services:
+  api:
+    build: .
+    image: groudeal-api:sprint5
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      AllowedHosts: ${API_ALLOWED_HOSTS:?Set explicit host names}
+      Jwt__Issuer: ${JWT_ISSUER:?Set issuer}
+      Jwt__Audience: ${JWT_AUDIENCE:?Set audience}
+      Jwt__ExpiryMinutes: "15"
+      DataProtection__KeyPath: /var/lib/groudeal/keys
+      DataProtection__CertificatePath: /run/secrets/data_protection.pfx
+      Proxy__KnownProxies__0: 172.30.0.10
+      Operations__WorkerMaxAttempts: "10"
+    secrets:
+      - source: database_connection
+        target: ConnectionStrings__Database
+      - source: jwt_signing_key
+        target: Jwt__SigningKey
+      - source: data_protection_certificate
+        target: data_protection.pfx
+      - source: data_protection_certificate_password
+        target: DataProtection__CertificatePassword
+    volumes:
+      - ${DP_KEYS_PATH:?Existing persistent directory owned by UID 1654}:/var/lib/groudeal/keys
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 40s
+    restart: unless-stopped
+    networks: [private]
+  edge:
+    image: ${EDGE_IMAGE:?Set reviewed nginx image with immutable digest}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
+    secrets: [edge_certificate, edge_private_key]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, CHOWN]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 128m
+    pids_limit: 64
+    stop_grace_period: 40s
+    restart: unless-stopped
+    networks:
+      private:
+        ipv4_address: 172.30.0.10
+networks:
+  private:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+secrets:
+  database_connection:
+    file: ${DATABASE_CONNECTION_FILE:?Runtime role connection with SslMode=VerifyFull}
+  jwt_signing_key:
+    file: ${JWT_SIGNING_KEY_FILE:?Random signing key file}
+  data_protection_certificate:
+    file: ${DP_CERTIFICATE_FILE:?Private key encryption certificate}
+  data_protection_certificate_password:
+    file: ${DP_CERTIFICATE_PASSWORD_FILE:?Certificate password file}
+  edge_certificate:
+    file: ${EDGE_CERTIFICATE_FILE:?TLS certificate chain PEM}
+  edge_private_key:
+    file: ${EDGE_PRIVATE_KEY_FILE:?TLS private key PEM}
+

@@ -1,0 +1,22 @@
+name: Backend verification
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - run: dotnet restore GroupBuy.sln -p:NuGetAuditMode=all
+      - run: dotnet build GroupBuy.sln --no-restore -c Release
+      # Testcontainers creates only disposable databases; no production secrets are configured.
+      - run: dotnet test GroupBuy.sln --no-build --no-restore -c Release --logger trx
+      - run: dotnet tool restore
+      - run: dotnet ef migrations has-pending-model-changes --project src/GroupBuy.Infrastructure --no-build --configuration Release
+      - run: dotnet list GroupBuy.sln package --vulnerable --include-transitive
