@@ -1,8 +1,8 @@
 namespace GroupBuy.Domain;
 
 public enum PickupStatus { Pending, ReadyForPickup, Collected, NotCollected, Cancelled }
-public enum PickupPaymentPolicy { NotTrackedOfflineResponsibility }
-public enum NotificationType { ReservationCreated, CampaignTargetReached, SellerConfirmationRequired, CampaignConfirmed, CampaignRejected, CampaignExpired, PickupReady, PickupCompleted }
+public enum PickupPaymentPolicy { NotTrackedOfflineResponsibility, VerifiedCapturedPayment }
+public enum NotificationType { ReservationCreated, CampaignTargetReached, SellerConfirmationRequired, CampaignConfirmed, CampaignRejected, CampaignExpired, PickupReady, PickupCompleted, CampaignRescueReminder, PilotPaymentCaptured, PilotPaymentFailed, PilotCampaignFailed, PilotCampaignFinalized, PilotFulfillmentReady, PilotOutForDelivery, PilotFulfillmentCompleted, PilotRefundCompleted, PilotFulfillmentExpired }
 
 // Quantities everywhere count variant units, including fractional bulk units.
 public sealed class Inventory : TrackedEntity

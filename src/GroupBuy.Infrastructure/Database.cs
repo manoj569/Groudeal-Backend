@@ -10,7 +10,7 @@ public sealed class IdentityAccount : IdentityUser<Guid>
     public int TokenVersion { get; set; }
     public DateTimeOffset? MfaEnrollmentAllowedUntilUtc { get; set; }
 }
-public sealed class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : IdentityDbContext<IdentityAccount, IdentityRole<Guid>, Guid>(options)
+public sealed partial class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : IdentityDbContext<IdentityAccount, IdentityRole<Guid>, Guid>(options)
 {
     public DbSet<User> UsersProfile => Set<User>();
     public DbSet<Seller> Sellers => Set<Seller>();
@@ -59,11 +59,13 @@ public sealed class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : Ide
         b.Entity<Product>(e => {
             e.ToTable("products"); e.HasOne<Seller>().WithMany().HasForeignKey(x => x.SellerId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<Category>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
+            e.HasAlternateKey(x => new { x.SellerId, x.Id });
             e.HasIndex(x => new { x.SellerId, x.Slug }).IsUnique(); e.HasIndex(x => new { x.Status, x.Id });
         });
         b.Entity<ProductVariant>(e => {
             e.ToTable("product_variants", t => t.HasCheckConstraint("ck_variant_quantity", "\"UnitQuantity\" > 0"));
-            e.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict);
+            e.HasAlternateKey(x => new { x.SellerId, x.Id });
+            e.HasOne<Product>().WithMany().HasForeignKey(x => new { x.SellerId, x.ProductId }).HasPrincipalKey(x => new { x.SellerId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(x => x.SKU).IsUnique(); e.Property(x => x.AttributesJson).HasColumnType("jsonb");
         });
         b.Entity<GroupBuyCampaign>(e => {
@@ -74,7 +76,7 @@ public sealed class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : Ide
                 t.HasCheckConstraint("ck_campaign_dates", "\"ExpiresAtUtc\" > \"StartsAtUtc\"");
             });
             e.HasOne<Seller>().WithMany().HasForeignKey(x => x.SellerId).OnDelete(DeleteBehavior.Restrict);
-            e.HasOne<ProductVariant>().WithMany().HasForeignKey(x => x.ProductVariantId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<ProductVariant>().WithMany().HasForeignKey(x => new { x.SellerId, x.ProductVariantId }).HasPrincipalKey(x => new { x.SellerId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<SellerLocation>().WithMany().HasForeignKey(x => new { x.SellerId, x.SellerLocationId }).HasPrincipalKey(x => new { x.SellerId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             e.Property(x => x.RowVersion).IsRowVersion(); e.Ignore(x => x.Progress);
             e.HasIndex(x => new { x.Status, x.ExpiresAtUtc, x.Id }); e.HasIndex(x => new { x.SellerId, x.Id });
@@ -92,12 +94,12 @@ public sealed class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : Ide
             e.ToTable("inventory", t => t.HasCheckConstraint("ck_inventory_available", "\"AvailableQuantity\" BETWEEN 0 AND 1000000 AND \"Version\" >= 0"));
             e.HasIndex(x => x.ProductVariantId).IsUnique(); e.HasIndex(x => new { x.SellerId, x.Id });
             e.HasOne<Seller>().WithMany().HasForeignKey(x => x.SellerId).OnDelete(DeleteBehavior.Restrict);
-            e.HasOne<ProductVariant>().WithMany().HasForeignKey(x => x.ProductVariantId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<ProductVariant>().WithMany().HasForeignKey(x => new { x.SellerId, x.ProductVariantId }).HasPrincipalKey(x => new { x.SellerId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             e.Property(x => x.Version).IsConcurrencyToken();
         });
         b.Entity<PickupRecord>(e => {
             e.ToTable("pickup_records", t => {
-                t.HasCheckConstraint("ck_pickup_status", "\"Status\" BETWEEN 0 AND 4 AND \"PaymentPolicy\" = 0 AND \"FailedAttempts\" >= 0");
+                t.HasCheckConstraint("ck_pickup_status", "\"Status\" BETWEEN 0 AND 4 AND \"PaymentPolicy\" IN (0, 1) AND \"FailedAttempts\" >= 0");
                 t.HasCheckConstraint("ck_pickup_collected", "(\"Status\" = 2) = (\"CollectedAtUtc\" IS NOT NULL AND \"CollectedByUserId\" IS NOT NULL)");
             });
             e.HasIndex(x => x.ReservationId).IsUnique(); e.HasIndex(x => new { x.CustomerUserId, x.Id });
@@ -130,6 +132,7 @@ public sealed class MarketplaceDb(DbContextOptions<MarketplaceDb> options) : Ide
             e.ToTable("admin_mfa_accepted_codes"); e.HasKey(x => new { x.UserId, x.CodeHash }); e.Property(x => x.CodeHash).HasMaxLength(64);
             e.HasOne<IdentityAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
         });
+        ConfigurePhaseOne(b);
         foreach (var entity in b.Model.GetEntityTypes()) foreach (var p in entity.GetProperties())
         {
             if (p.ClrType == typeof(decimal) || p.ClrType == typeof(decimal?))

@@ -2,8 +2,7 @@
 # External PostgreSQL is intentional; no database port is published here.
 services:
   api:
-    build: .
-    image: groudeal-api:sprint5
+    image: ${API_IMAGE:?Set reviewed API image with immutable digest}
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_HTTP_PORTS: 8080
@@ -13,7 +12,7 @@ services:
       Jwt__ExpiryMinutes: "15"
       DataProtection__KeyPath: /var/lib/groudeal/keys
       DataProtection__CertificatePath: /run/secrets/data_protection.pfx
-      Proxy__KnownProxies__0: 172.30.0.10
+      Proxy__KnownProxies__0: ${EDGE_PRIVATE_IP:-172.30.0.10}
       Operations__WorkerMaxAttempts: "10"
     secrets:
       - source: database_connection
@@ -43,7 +42,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8443:443"
+      - "127.0.0.1:${EDGE_HOST_PORT:-8443}:443"
     volumes:
       - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
     secrets: [edge_certificate, edge_private_key]
@@ -60,12 +59,12 @@ services:
     restart: unless-stopped
     networks:
       private:
-        ipv4_address: 172.30.0.10
+        ipv4_address: ${EDGE_PRIVATE_IP:-172.30.0.10}
 networks:
   private:
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${PRIVATE_SUBNET:-172.30.0.0/24}
 secrets:
   database_connection:
     file: ${DATABASE_CONNECTION_FILE:?Runtime role connection with SslMode=VerifyFull}

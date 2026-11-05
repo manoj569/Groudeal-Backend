@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace GroupBuy.Infrastructure;
-public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAccount> users, TimeProvider clock, IConfiguration config, IServiceScopeFactory scopes, ILogger<Marketplace> logger, WorkerHealthState workerHealth) : IMarketplace, ICampaignExpiryProcessor, IOperations, IAdministration
+public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAccount> users, TimeProvider clock, IConfiguration config, IServiceScopeFactory scopes, ILogger<Marketplace> logger, WorkerHealthState workerHealth, OperationalMetrics metrics, IPaymentGateway gateway, Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection) : IMarketplace, ICampaignExpiryProcessor, IOperations, IAdministration
 {
     private static BusinessException Missing() => new(404, "not_found", "Resource not found.");
     private static void Require(bool condition, string message, int status = 409) { if (!condition) throw new BusinessException(status, "rule_violation", message); }
@@ -35,8 +35,8 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
     private static PickupResponse Pickup(SellerLocation l) => new(l.Id, l.AddressLine1, l.AddressLine2, l.Area, l.City, l.State, l.PostalCode);
     private async Task<SellerResponse> SellerDto(Seller s, CancellationToken ct) => new(s.Id, s.BusinessName, s.SellerType, s.Description, s.VerificationStatus, (await db.Locations.Where(x => x.SellerId == s.Id && x.IsActive && x.IsPickupEnabled).ToListAsync(ct)).Select(Pickup).ToArray());
     private async Task<SellerReviewResponse> ReviewDto(Seller s, CancellationToken ct) => new(s.Id, s.OwnerUserId, s.BusinessName, s.ContactEmail, s.ContactPhone, s.FssaiRegistrationNumber, s.VerificationStatus, (await db.Locations.Where(x => x.SellerId == s.Id).ToListAsync(ct)).Select(Pickup).ToArray());
-    private static CampaignResponse CampaignDto(GroupBuyCampaign c) => new(c.Id, c.SellerId, c.ProductVariantId, c.SellerLocationId, c.Title, c.Description, c.ReferenceUnitPrice, c.GroupUnitPrice, c.TargetQuantity, c.ReservedQuantity, c.Progress, c.MinimumReservationQuantity, c.MaximumReservationQuantity, c.StartsAtUtc, c.ExpiresAtUtc, c.Status);
-    private static ReservationResponse ReservationDto(GroupBuyReservation r, GroupBuyCampaign c) => new(r.Id, r.CampaignId, r.Quantity, r.UnitPriceSnapshot, r.TotalPriceSnapshot, r.Status, r.CreatedAt, c.Progress);
+    private static CampaignResponse CampaignDto(GroupBuyCampaign c) => new(c.Id, c.SellerId, c.ProductVariantId, c.SellerLocationId, c.Title, c.Description, c.ReferenceUnitPrice, c.GroupUnitPrice, c.TargetQuantity, c.ReservedQuantity, c.Progress, c.MinimumReservationQuantity, c.MaximumReservationQuantity, c.StartsAtUtc, c.ExpiresAtUtc, c.Status, c.UsesTierPricing);
+    private static ReservationResponse ReservationDto(GroupBuyReservation r, GroupBuyCampaign c) => new(r.Id, r.CampaignId, r.Quantity, r.UnitPriceSnapshot, r.TotalPriceSnapshot, r.Status, r.CreatedAt, c.Progress, c.UsesTierPricing);
     private async Task<ProductResponse> ProductDto(Product p, CancellationToken ct) => new(p.Id, p.SellerId, p.CategoryId, p.Name, p.Slug, p.Description, p.ProductType, (await db.Variants.Where(x => x.ProductId == p.Id && x.IsActive).ToListAsync(ct)).Select(v => new VariantResponse(v.Id, v.SKU, v.VariantName, v.UnitOfMeasure, v.UnitQuantity, v.AttributesJson)).ToArray());
     private IQueryable<Product> PublicProducts => db.Products.Where(p => p.Status == ResourceStatus.Active && db.Categories.Any(c => c.Id == p.CategoryId && c.IsActive) && db.Sellers.Any(s => s.Id == p.SellerId && s.Status == ResourceStatus.Active && s.VerificationStatus == VerificationStatus.Approved));
     private IQueryable<GroupBuyCampaign> PublicCampaigns => db.Campaigns.Where(c => c.Status != CampaignStatus.Draft && c.Status != CampaignStatus.PendingApproval && db.Sellers.Any(s => s.Id == c.SellerId && s.Status == ResourceStatus.Active && s.VerificationStatus == VerificationStatus.Approved) && db.Variants.Any(v => v.Id == c.ProductVariantId && v.IsActive && PublicProducts.Any(p => p.Id == v.ProductId)));
@@ -95,7 +95,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
             Require(!await db.Inventories.AnyAsync(x => x.ProductVariantId == variant.Id && x.AvailableQuantity > 0, ct), "Declare zero inventory before changing variant units.");
         if (variant is not null) Require(!await db.Campaigns.AnyAsync(x => x.ProductVariantId == variant.Id, ct), "Product variants referenced by campaigns cannot be edited.");
         p.CategoryId = request.CategoryId; p.Name = request.Name; p.Slug = request.Slug; p.Description = request.Description; p.ProductType = request.ProductType; p.UpdatedAt = clock.GetUtcNow();
-        if (variant is null) { variant = new ProductVariant { ProductId = p.Id }; db.Variants.Add(variant); }
+        if (variant is null) { variant = new ProductVariant { SellerId = seller.Id, ProductId = p.Id }; db.Variants.Add(variant); }
         variant.SKU = request.SKU; variant.VariantName = request.VariantName; variant.UnitOfMeasure = request.UnitOfMeasure; variant.UnitQuantity = request.UnitQuantity; variant.AttributesJson = request.AttributesJson;
         Require(request.UnitOfMeasure is not (UnitOfMeasure.Piece or UnitOfMeasure.Pack) || request.UnitQuantity == decimal.Truncate(request.UnitQuantity), "Discrete unit quantities must be whole.", 400);
         Audit(actor, id is null ? "ProductCreated" : "ProductUpdated", p); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return await ProductDto(p, ct);
@@ -122,6 +122,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         GroupBuyCampaign c;
         if (id is null) { c = new GroupBuyCampaign { SellerId = s.Id }; db.Campaigns.Add(c); }
         else { c = await LockCampaign(id.Value, ct); Require(c.SellerId == s.Id, "Resource not found.", 404); Require(c.Status == CampaignStatus.Draft, "Only drafts can be edited."); }
+        Require(!c.UsesTierPricing, "Configure a new draft before editing tier campaign resources.");
         c.ProductVariantId = request.ProductVariantId; c.SellerLocationId = request.SellerLocationId; c.Title = request.Title; c.Description = request.Description;
         c.ReferenceUnitPrice = request.ReferenceUnitPrice; c.GroupUnitPrice = request.GroupUnitPrice; c.TargetQuantity = request.TargetQuantity; c.MinimumReservationQuantity = request.MinimumReservationQuantity; c.MaximumReservationQuantity = request.MaximumReservationQuantity; c.StartsAtUtc = request.StartsAtUtc; c.ExpiresAtUtc = request.ExpiresAtUtc; c.UpdatedAt = clock.GetUtcNow();
         Audit(actor, id is null ? "CampaignCreated" : "CampaignUpdated", c); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return CampaignDto(c);
@@ -131,6 +132,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         await using var tx = await db.Database.BeginTransactionAsync(ct); var own = await OwnedSeller(actor, ct); var seller = await LockSeller(own.Id, ct);
         var c = await LockCampaign(id, ct); Require(c.SellerId == seller.Id, "Resource not found.", 404); Require(Eligible(seller), "Approved seller required.", 403); Require(c.ExpiresAtUtc > clock.GetUtcNow(), "Campaign deadline passed.");
         Require(c.Status == CampaignStatus.Draft, "Only drafts can be submitted.");
+        Require(!config.GetValue("Pilot:Enabled", false) || c.UsesTierPricing, "Pilot campaigns require tiers and paid checkout.");
         await CheckOperationalResources(seller, c, ct);
         Require(await FreeInventory(c.ProductVariantId, ct) >= c.TargetQuantity, "Insufficient uncommitted inventory.");
         c.CommittedQuantity = c.TargetQuantity;
@@ -156,6 +158,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         Validate.With(request, new ReservationValidator()); await using var tx = await db.Database.BeginTransactionAsync(ct);
         var sellerId = await db.Campaigns.Where(x => x.Id == id).Select(x => (Guid?)x.SellerId).SingleOrDefaultAsync(ct) ?? throw Missing();
         var seller = await LockSeller(sellerId, ct); var c = await LockCampaign(id, ct);
+        Require(!c.UsesTierPricing, "Use paid checkout for tier campaigns.");
         var existing = await db.Reservations.SingleOrDefaultAsync(x => x.CampaignId == id && x.CustomerUserId == actor.UserId && x.IdempotencyKey == request.IdempotencyKey, ct);
         if (existing is not null) { Require(existing.Quantity == request.Quantity, "Idempotency key was used with another quantity."); await tx.CommitAsync(ct); return ReservationDto(existing, c); }
         Require(Eligible(seller), "Seller is unavailable.");
@@ -187,6 +190,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
     {
         var campaignId = await db.Reservations.Where(x => x.Id == id && x.CustomerUserId == actor.UserId).Select(x => (Guid?)x.CampaignId).SingleOrDefaultAsync(ct) ?? throw Missing();
         await using var tx = await db.Database.BeginTransactionAsync(ct); var c = await LockCampaign(campaignId, ct);
+        Require(!c.UsesTierPricing, "Use payment order cancellation for tier campaigns.");
         var r = await db.Reservations.SingleAsync(x => x.Id == id && x.CustomerUserId == actor.UserId, ct);
         if (r.Status == ReservationStatus.Cancelled) { await tx.CommitAsync(ct); return ReservationDto(r, c); }
         Require(r.Status == ReservationStatus.Active && c.Status is CampaignStatus.Open or CampaignStatus.TargetReached && clock.GetUtcNow() < c.ExpiresAtUtc, "Cancellation window is closed.");
@@ -254,7 +258,13 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
                     var failures = await recoveryDb.Campaigns.Where(c => c.Id == id).Select(c => c.WorkerFailureCount).SingleAsync(ct);
                     var retry = clock.GetUtcNow().AddSeconds(Math.Min(900, 15 * Math.Pow(2, Math.Min(failures, 6))));
                     var recoveryService = recovery.ServiceProvider.GetRequiredService<Marketplace>();
-                    await recoveryService.DueCampaigns(clock.GetUtcNow()).Where(c => c.Id == id && c.WorkerFailureCount < config.GetValue("Operations:WorkerMaxAttempts", 10)).ExecuteUpdateAsync(s => s.SetProperty(c => c.WorkerFailureCount, c => c.WorkerFailureCount + 1).SetProperty(c => c.WorkerRetryAtUtc, retry).SetProperty(c => c.WorkerErrorCode, "processing_failed"), ct);
+                    var scheduled = await recoveryService.DueCampaigns(clock.GetUtcNow()).Where(c => c.Id == id && c.WorkerFailureCount < config.GetValue("Operations:WorkerMaxAttempts", 10)).ExecuteUpdateAsync(s => s.SetProperty(c => c.WorkerFailureCount, c => c.WorkerFailureCount + 1).SetProperty(c => c.WorkerRetryAtUtc, retry).SetProperty(c => c.WorkerErrorCode, "processing_failed"), ct);
+                    var maxAttempts = config.GetValue("Operations:WorkerMaxAttempts", 10);
+                    if (scheduled > 0)
+                    {
+                        if (failures + 1 >= maxAttempts) metrics.RecordCampaignRetryExhaustion();
+                        else metrics.RecordCampaignRetry(ex.GetType().Name);
+                    }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception recoveryError) { logger.LogError("Campaign retry persistence failed {CampaignId} {ErrorType}", id, recoveryError.GetType().Name); }

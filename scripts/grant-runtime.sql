@@ -33,6 +33,9 @@ BEGIN
  EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA public TO %I', runtime_role);
  EXECUTE format('GRANT INSERT ON users, audit_logs TO %I', runtime_role);
  EXECUTE format('GRANT INSERT, UPDATE ON identity_accounts, identity_user_tokens, sellers, seller_locations, products, product_variants, group_buy_campaigns, group_buy_reservations, inventory, pickup_records, internal_notifications, admin_mfa_challenges, admin_mfa_accepted_codes TO %I', runtime_role);
+ EXECUTE format('GRANT INSERT, UPDATE ON customer_interests, campaign_price_tiers, payment_orders, payment_webhooks, payment_refunds, order_fulfillments, sandbox_payment_receipts, sandbox_refund_receipts, pilot_jobs TO %I', runtime_role);
+ -- Draft-only tier replacement is the sole new delete operation; financial/audit rows remain durable.
+ EXECUTE format('GRANT DELETE ON campaign_price_tiers TO %I', runtime_role);
  EXECUTE format('GRANT INSERT, DELETE ON identity_user_roles TO %I', runtime_role);
  ALTER TABLE public.identity_user_roles ENABLE ROW LEVEL SECURITY;
  DROP POLICY IF EXISTS groudeal_runtime_select ON public.identity_user_roles;

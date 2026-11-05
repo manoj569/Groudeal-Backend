@@ -485,3 +485,47 @@ VALUES ('20261102012900_AdminMfaSecurity', '10.0.14');
 
 COMMIT;
 
+START TRANSACTION;
+ALTER TABLE group_buy_campaigns DROP CONSTRAINT "FK_group_buy_campaigns_product_variants_ProductVariantId";
+
+ALTER TABLE product_variants DROP CONSTRAINT "FK_product_variants_products_ProductId";
+
+DROP INDEX "IX_product_variants_ProductId";
+
+DROP INDEX "IX_group_buy_campaigns_ProductVariantId";
+
+ALTER TABLE product_variants ADD "SellerId" uuid;
+
+UPDATE product_variants AS variant SET "SellerId" = product."SellerId" FROM products AS product WHERE product."Id" = variant."ProductId";
+
+ALTER TABLE product_variants ALTER COLUMN "SellerId" SET NOT NULL;
+
+ALTER TABLE products ADD CONSTRAINT "AK_products_SellerId_Id" UNIQUE ("SellerId", "Id");
+
+ALTER TABLE product_variants ADD CONSTRAINT "AK_product_variants_SellerId_Id" UNIQUE ("SellerId", "Id");
+
+CREATE INDEX "IX_product_variants_SellerId_ProductId" ON product_variants ("SellerId", "ProductId");
+
+CREATE INDEX "IX_group_buy_campaigns_SellerId_ProductVariantId" ON group_buy_campaigns ("SellerId", "ProductVariantId");
+
+ALTER TABLE group_buy_campaigns ADD CONSTRAINT "FK_group_buy_campaigns_product_variants_SellerId_ProductVarian~" FOREIGN KEY ("SellerId", "ProductVariantId") REFERENCES product_variants ("SellerId", "Id") ON DELETE RESTRICT;
+
+ALTER TABLE product_variants ADD CONSTRAINT "FK_product_variants_products_SellerId_ProductId" FOREIGN KEY ("SellerId", "ProductId") REFERENCES products ("SellerId", "Id") ON DELETE RESTRICT;
+
+INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+VALUES ('20261103144032_EnforceVariantSellerConstraint', '10.0.14');
+
+COMMIT;
+
+START TRANSACTION;
+ALTER TABLE inventory DROP CONSTRAINT "FK_inventory_product_variants_ProductVariantId";
+
+CREATE INDEX "IX_inventory_SellerId_ProductVariantId" ON inventory ("SellerId", "ProductVariantId");
+
+ALTER TABLE inventory ADD CONSTRAINT "FK_inventory_product_variants_SellerId_ProductVariantId" FOREIGN KEY ("SellerId", "ProductVariantId") REFERENCES product_variants ("SellerId", "Id") ON DELETE RESTRICT;
+
+INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+VALUES ('20261103154949_EnforceInventoryVariantSellerOwnership', '10.0.14');
+
+COMMIT;
+

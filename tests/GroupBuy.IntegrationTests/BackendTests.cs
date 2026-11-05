@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -12,27 +13,67 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
 namespace GroupBuy.IntegrationTests;
+
 public sealed class DatabaseFixture : IAsyncLifetime
 {
     private PostgreSqlContainer? container;
     private string? adminConnection;
     private readonly string name = "groupbuy_test_" + Guid.NewGuid().ToString("N");
     public string Connection { get; private set; } = "";
+    internal PostgreSqlContainer Container => container ?? throw new InvalidOperationException("Disposable PostgreSQL container is unavailable.");
     public async Task InitializeAsync()
     {
-        adminConnection = Environment.GetEnvironmentVariable("GROUPBUY_TEST_POSTGRES");
-        if (adminConnection is null)
+        var configuredConnection = Environment.GetEnvironmentVariable("GROUPBUY_TEST_POSTGRES");
+        if (configuredConnection is null)
         {
-            container = new PostgreSqlBuilder().WithImage("postgres:17-alpine").Build(); await container.StartAsync(); adminConnection = container.GetConnectionString();
+            container = new PostgreSqlBuilder("postgres:17-alpine").Build(); await container.StartAsync(); configuredConnection = container.GetConnectionString();
         }
-        await using var connection = new NpgsqlConnection(adminConnection); await connection.OpenAsync();
+        var adminConnectionString = configuredConnection ?? throw new InvalidOperationException("Test database connection was not configured.");
+        ValidateAdminConnectionIsolated(adminConnectionString);
+        adminConnection = adminConnectionString;
+        await using var connection = new NpgsqlConnection(adminConnectionString); await connection.OpenAsync();
         await using var command = new NpgsqlCommand($"CREATE DATABASE {name}", connection); await command.ExecuteNonQueryAsync();
-        Connection = new NpgsqlConnectionStringBuilder(adminConnection) { Database = name }.ConnectionString;
+        Connection = new NpgsqlConnectionStringBuilder(adminConnectionString) { Database = name }.ConnectionString;
         await using var db = new MarketplaceDb(new DbContextOptionsBuilder<MarketplaceDb>().UseNpgsql(Connection).Options); await db.Database.MigrateAsync();
+    }
+    internal static void ValidateAdminConnectionIsolated(string adminConnection)
+    {
+        var settings = new NpgsqlConnectionStringBuilder(adminConnection);
+        var protectedDatabase = string.Equals(settings.Database, "groupbuy_sprint51", StringComparison.OrdinalIgnoreCase);
+        var hosts = (settings.Host ?? string.Empty).Split(',');
+        var protectedHost = hosts.Any(host => string.Equals(host.Trim(), "groudeal-sprint51-postgres", StringComparison.OrdinalIgnoreCase));
+        var loopbackHost = hosts.Any(host =>
+            string.Equals(host.Trim(), "localhost", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(host.Trim(), "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(host.Trim(), "::1", StringComparison.OrdinalIgnoreCase));
+        var protectedPort = loopbackHost && settings.Port == 55432;
+        if (protectedDatabase || protectedHost || protectedPort)
+            throw new InvalidOperationException("GROUPBUY_TEST_POSTGRES cannot target the protected Sprint 5.1 database endpoint.");
+    }
+    internal static string CreateTestRuntimePassword() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    internal static NpgsqlConnectionStringBuilder CreateRuntimeConnectionSettings(string baseConnection, string username, string password) =>
+        new(baseConnection) { Username = username, Password = password, Pooling = false };
+    internal static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+            if (File.Exists(Path.Combine(directory.FullName, "GroupBuy.sln"))) return directory.FullName;
+        throw new DirectoryNotFoundException("Repository root was not found while locating integration-test assets.");
+    }
+    internal static async Task CreateRuntimeLoginRoleAsync(NpgsqlConnection admin, string role, string password)
+    {
+        await using var format = new NpgsqlCommand("SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', @role, @password)", admin);
+        format.Parameters.AddWithValue("role", role);
+        format.Parameters.AddWithValue("password", password);
+        var statement = (string?)await format.ExecuteScalarAsync() ?? throw new InvalidOperationException("Failed to prepare disposable runtime role creation.");
+        await using var create = new NpgsqlCommand(statement, admin);
+        await create.ExecuteNonQueryAsync();
     }
     public async Task DisposeAsync()
     {
@@ -41,16 +82,60 @@ public sealed class DatabaseFixture : IAsyncLifetime
         if (container is not null) await container.DisposeAsync();
     }
 }
-public sealed class ApiFactory(string connection, string environment = "Development", Dictionary<string, string?>? overrides = null) : WebApplicationFactory<Program>
+public sealed class ApiFactory(string connection, string environment = "Development", Dictionary<string, string?>? overrides = null, bool disableWorker = false) : WebApplicationFactory<Program>
 {
+    private static readonly object HostStartupLock = new();
     internal static readonly System.Runtime.CompilerServices.ConditionalWeakTable<HttpClient, ApiFactory> ClientFactories = new();
-    public new HttpClient CreateClient() { var client = base.CreateClient(); ClientFactories.Add(client, this); return client; }
+    public new HttpClient CreateClient() => CreateClientWithEnvironmentVariable(null, null);
+    public HttpClient CreateClientWithEnvironmentVariable(string? name, string? value)
+    {
+        lock (HostStartupLock)
+        {
+            var previous = name is null ? null : Environment.GetEnvironmentVariable(name);
+            try
+            {
+                if (name is not null) Environment.SetEnvironmentVariable(name, value);
+                var client = base.CreateClient();
+                ClientFactories.Add(client, this);
+                return client;
+            }
+            finally { if (name is not null) Environment.SetEnvironmentVariable(name, previous); }
+        }
+    }
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
+        if(disableWorker)builder.ConfigureServices(s=>{
+            foreach(var service in s.Where(d=>d.ImplementationType==typeof(GroupBuy.API.ExpiryWorker)).ToArray())s.Remove(service);
+        });
         builder.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Database"] = connection, ["Jwt:SigningKey"] = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48)), ["Jwt:Issuer"] = "groupbuy-tests", ["Jwt:Audience"] = "groupbuy-tests", ["Demo:Password"] = "Test!" + Guid.NewGuid().ToString("N") + "A1" }.Concat(overrides ?? new()).GroupBy(p => p.Key).Select(g => g.Last())));
     }
 }
+
+internal static class SafeTestExceptionSummary
+{
+    internal static string Summarize(Exception exception)
+    {
+        var parts = new List<string>();
+        for (var current = exception; current is not null && parts.Count < 8; current = current.InnerException)
+        {
+            var type = current.GetType().FullName ?? current.GetType().Name;
+            type = new string(type.Take(96).Select(c => char.IsLetterOrDigit(c) || c is '.' or '_' ? c : '_').ToArray());
+            var part = "Type=" + type;
+            if (current is Npgsql.PostgresException postgres)
+            {
+                var sqlState = postgres.SqlState is { Length: 5 } && postgres.SqlState.All(char.IsLetterOrDigit) ? postgres.SqlState : "withheld";
+                part += $"; SqlState={sqlState}; Schema={SafeIdentifier(postgres.SchemaName)}; Table={SafeIdentifier(postgres.TableName)}; Constraint={SafeIdentifier(postgres.ConstraintName)}";
+            }
+            parts.Add(part);
+        }
+        return string.Join(" --> ", parts);
+    }
+
+    private static string SafeIdentifier(string? value) => string.IsNullOrEmpty(value)
+        ? "none"
+        : new string(value.Take(96).Select(c => char.IsLetterOrDigit(c) || c is '.' or '_' ? c : '_').ToArray());
+    }
 public partial class BackendTests(DatabaseFixture fixture) : IClassFixture<DatabaseFixture>
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
@@ -66,18 +151,23 @@ public partial class BackendTests(DatabaseFixture fixture) : IClassFixture<Datab
         if (role == "Admin") { user!.MfaEnrollmentAllowedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(15); Assert.True((await manager.UpdateAsync(user)).Succeeded); }
     }
     private static SellerRequest SellerRequest(string name) => new(name, SellerType.Grocery, "Integration seller", "shop@example.invalid", "+919876543210", "12345678901234", new("Pickup Road", null, "Area", "City", "State", "110001", null, null));
-    private async Task<(ApiFactory Factory, HttpClient Admin, HttpClient Seller, HttpClient Customer, Guid Campaign, Guid CustomerId)> Setup(decimal target = 10)
+    private async Task<(ApiFactory Factory, HttpClient Admin, HttpClient Seller, HttpClient Customer, Guid Campaign, Guid CustomerId)> Setup(decimal target = 10, bool tier = false, bool disableWorker = false)
     {
-        var f = new ApiFactory(fixture.Connection); var admin = f.CreateClient(); var seller = f.CreateClient(); var customer = f.CreateClient();
-        var a = await Register(admin, "admin"); await Role(f, a.Id, "Admin"); await Login(admin, a);
+        var f = new ApiFactory(fixture.Connection, overrides: tier ? new() {
+            ["Pilot:Enabled"]="true",["Pilot:ServiceAreas:0:Id"]="synthetic-area",["Pilot:ServiceAreas:0:Name"]="Synthetic test area",["Pilot:ServiceAreas:0:PostalCodes:0"]="TEST01",["Pilot:DeliveryFeeMinor"]="3000",
+            ["Payments:Enabled"]="true",["Payments:Provider"]="Sandbox",["Payments:SandboxEnabled"]="true",["Payments:SandboxWebhookSecret"]=Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
+        } : null, disableWorker: disableWorker); var admin = f.CreateClient(); var seller = f.CreateClient(); var customer = f.CreateClient();
         var s = await Register(seller, "seller"); await Login(seller, s); var c = await Register(customer, "customer"); await Login(customer, c);
         var profile = await Read<SellerResponse>(await seller.PostAsJsonAsync("/api/v1/seller/profile", SellerRequest("Test Shop")));
         var unapproved = await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(Guid.NewGuid(), Guid.NewGuid(), "Test", "", 100, 80, target, 1, target, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)));
         Assert.Equal(HttpStatusCode.Forbidden, unapproved.StatusCode);
+        // Enroll/authenticate immediately before Admin work, keeping real MFA/token expiry rules intact.
+        var a = await Register(admin, "admin"); await Role(f, a.Id, "Admin"); await Login(admin, a);
         await Read<SellerReviewResponse>(await admin.PostAsJsonAsync($"/api/v1/admin/sellers/{profile.Id}/approve", new ReviewRequest(null))); await Login(seller, s);
         var product = await Read<ProductResponse>(await seller.PostAsJsonAsync("/api/v1/seller/products", new ProductRequest(CategorySeed.All[1].Id, "Wheat", "wheat", "Test", ProductType.Physical, Guid.NewGuid().ToString("N"), "1 kg", UnitOfMeasure.Kilogram, 1, "{}")));
         await Read<InventoryResponse>(await seller.PutAsJsonAsync($"/api/v1/seller/inventory/{product.Variants[0].Id}", new InventoryRequest(target, 0)));
         var campaign = await Read<CampaignResponse>(await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(product.Variants[0].Id, profile.PickupLocations[0].Id, "Test wheat", "Test", 100, 80, target, 1, target, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1))));
+        if(tier)await Read<TierCampaignResponse>(await seller.PutAsJsonAsync($"/api/v1/mvp/seller/campaigns/{campaign.Id}/tiers",new TierConfigurationRequest("synthetic-area",[new(target/2,80),new(target,60)],null)));
         await Read<CampaignResponse>(await seller.PostAsync($"/api/v1/seller/group-buys/{campaign.Id}/submit", null));
         await Read<CampaignResponse>(await admin.PostAsJsonAsync($"/api/v1/admin/group-buys/{campaign.Id}/approve", new ReviewRequest(null)));
         return (f, admin, seller, customer, campaign.Id, c.Id);
@@ -254,6 +344,27 @@ public partial class BackendTests(DatabaseFixture fixture) : IClassFixture<Datab
         Assert.Equal(PostgresErrorCodes.CheckViolation, error.SqlState);
         db.Reservations.Add(new GroupBuyReservation { CampaignId = x.Campaign, CustomerUserId = x.CustomerId, Quantity = -1, UnitPriceSnapshot = 80, TotalPriceSnapshot = -80, IdempotencyKey = "invalid-direct-db" });
         var update = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync()); Assert.Equal(PostgresErrorCodes.CheckViolation, ((PostgresException)update.InnerException!).SqlState);
+    }
+    [Fact]
+    public async Task Database_constraints_reject_cross_seller_campaign_and_inventory_variant_references()
+    {
+        var first = await Setup();
+        var second = await Setup();
+        using var firstFactory = first.Factory; using var secondFactory = second.Factory;
+        await using var scope = firstFactory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MarketplaceDb>();
+        var otherCampaign = await db.Campaigns.Where(c => c.Id == second.Campaign).Select(c => new { c.SellerId, c.ProductVariantId }).SingleAsync();
+        var firstVariantId = await db.Campaigns.Where(c => c.Id == first.Campaign).Select(c => c.ProductVariantId).SingleAsync();
+
+        var error = await Assert.ThrowsAsync<PostgresException>(() => db.Campaigns.Where(c => c.Id == first.Campaign)
+            .ExecuteUpdateAsync(update => update.SetProperty(c => c.ProductVariantId, otherCampaign.ProductVariantId)));
+
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, error.SqlState);
+
+        var inventoryError = await Assert.ThrowsAsync<PostgresException>(() => db.Inventories.Where(i => i.ProductVariantId == firstVariantId)
+            .ExecuteUpdateAsync(update => update.SetProperty(i => i.SellerId, otherCampaign.SellerId)));
+
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, inventoryError.SqlState);
     }
     [Fact]
     public async Task Demo_seed_is_explicit_transactional_and_repeatable()

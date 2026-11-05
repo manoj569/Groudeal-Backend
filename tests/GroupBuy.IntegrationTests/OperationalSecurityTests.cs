@@ -34,7 +34,9 @@ public partial class BackendTests
     [Trait("Sprint5", "Security")]
     public async Task Liveness_stays_safe_while_readiness_detects_database_outage_and_recovery()
     {
-        using var f = new ApiFactory(fixture.Connection); using var client = f.CreateClient();
+        // This test drives health and processing explicitly. A hosted worker must
+        // not overwrite its synthetic health states or compete with outage probes.
+        using var f = new ApiFactory(fixture.Connection, disableWorker: true); using var client = f.CreateClient();
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
         var health = f.Services.GetRequiredService<WorkerHealthState>(); health.Completed(DateTimeOffset.UtcNow);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/ready")).StatusCode);

@@ -23,13 +23,19 @@ builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 64 * 1024);
 builder.Services.AddDbContext<MarketplaceDb>(o => o.UseNpgsql(builder.Configuration.GetConnectionString("Database") ?? throw new InvalidOperationException("Set ConnectionStrings__Database."), p => p.CommandTimeout(30)));
 builder.Services.AddIdentityCore<IdentityAccount>(o => { o.User.RequireUniqueEmail = true; o.Password.RequiredLength = 12; o.Lockout.MaxFailedAccessAttempts = 5; o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15); }).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<MarketplaceDb>().AddUserStore<ProtectedIdentityStore>().AddDefaultTokenProviders();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<AuthenticationRateLimitSettings>();
 builder.Services.AddScoped<AdminMfaService>(); builder.Services.AddScoped<IAdminMfa>(s => s.GetRequiredService<AdminMfaService>()); builder.Services.AddScoped<AdminProvisioner>();
 ProductionConfiguration.Configure(builder);
+PilotConfiguration.Validate(builder.Configuration, builder.Environment);
 builder.Services.AddSingleton<WorkerHealthState>();
+builder.Services.AddSingleton<OperationalMetrics>();
 builder.Services.AddScoped<IIdentityService, IdentityService>(); builder.Services.AddScoped<Marketplace>();
 builder.Services.AddScoped<IMarketplace>(s => s.GetRequiredService<Marketplace>()); builder.Services.AddScoped<ICampaignExpiryProcessor>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddScoped<IOperations>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddScoped<IAdministration>(s => s.GetRequiredService<Marketplace>());
+builder.Services.AddHttpClient("Razorpay");
+builder.Services.AddScoped<IPaymentGateway>(PilotConfiguration.Gateway);
+builder.Services.AddScoped<IPhaseOne>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddHostedService<ExpiryWorker>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o => {
     var key = builder.Configuration["Jwt:SigningKey"]!;
@@ -48,7 +54,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
                 ctx.Fail("Role assignment revoked.");
         }
     }, OnAuthenticationFailed = ctx => {
-        if (!ctx.HttpContext.RequestAborted.IsCancellationRequested) ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("AuthenticationSecurity").LogWarning("Authentication failed {ErrorType} {TraceId}", ctx.Exception.GetType().Name, ctx.HttpContext.TraceIdentifier);
+        if (!ctx.HttpContext.RequestAborted.IsCancellationRequested) {
+            var errorType = ctx.Exception.GetType().Name;
+            ctx.HttpContext.RequestServices.GetRequiredService<OperationalMetrics>().RecordAuthenticationFailure(errorType);
+            ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("AuthenticationSecurity").LogWarning("Authentication failed {ErrorType} {TraceId}", errorType, ctx.HttpContext.TraceIdentifier);
+        }
         ctx.Fail("Authentication unavailable or invalid."); return Task.CompletedTask;
     } };
 });
@@ -57,8 +67,8 @@ builder.Services.ConfigureHttpJsonOptions(o => { o.SerializerOptions.Converters.
 builder.Services.AddProblemDetails(); builder.Services.AddExceptionHandler<Errors>();
 builder.Services.AddHttpsRedirection(o => o.HttpsPort = 443);
 builder.Services.AddOpenApi(o => o.AddDocumentTransformer((document, context, ct) => {
-    document.Info.Title = "GroupBuy Sprint 1 API"; document.Info.Version = "v1";
-    document.Info.Description = "Reservations are non-financial commitments. All prices are INR per variant unit.";
+    document.Info.Title = "Groudeal Marketplace API"; document.Info.Version = "v1";
+    document.Info.Description = "Legacy reservations remain non-financial. Phase One campaigns require captured provider payments; final tier differences return to the source payment. Prices are INR per variant unit.";
     document.Components ??= new();
     document.Components.SecuritySchemes ??= new Dictionary<string, Microsoft.OpenApi.IOpenApiSecurityScheme>();
     document.Components.SecuritySchemes["Bearer"] = new Microsoft.OpenApi.OpenApiSecurityScheme { Type = Microsoft.OpenApi.SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT" };
@@ -70,10 +80,11 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => { if (origins.Length > 0) 
 builder.Services.AddRateLimiter(o => {
     o.RejectionStatusCode = 429;
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-    o.AddPolicy("auth", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.AddPolicy("auth", c => c.RequestServices.GetRequiredService<AuthenticationRateLimitSettings>().Partition(c.Connection.RemoteIpAddress?.ToString() ?? "unknown"));
     o.AddPolicy("admin", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("mfa", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("pickup", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.AddPolicy("checkout", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.OnRejected = async (c, ct) => { c.HttpContext.Response.StatusCode = 429; await Results.Problem(statusCode: 429, title: "Rate limit exceeded.").ExecuteAsync(c.HttpContext); };
 });
 var app = builder.Build();
@@ -91,9 +102,21 @@ app.UseForwardedHeaders();
 app.UseExceptionHandler(); app.UseStatusCodePages(async c => await Results.Problem(statusCode: c.HttpContext.Response.StatusCode).ExecuteAsync(c.HttpContext));
 if (!app.Environment.IsDevelopment()) { app.UseHsts(); app.UseWhen(c => c.Request.Path != "/health/live" && c.Request.Path != "/health/ready", branch => branch.UseHttpsRedirection()); }
 app.Use(async (c, next) => { c.Response.Headers.XContentTypeOptions = "nosniff"; c.Response.Headers["Referrer-Policy"] = "no-referrer"; c.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"; c.Response.Headers.CacheControl = "no-store"; await next(); });
+app.Use(async (context, next) => {
+    var started = System.Diagnostics.Stopwatch.GetTimestamp();
+    try { await next(); }
+    finally {
+        var route = context.GetEndpoint() is Microsoft.AspNetCore.Routing.RouteEndpoint endpoint
+            ? endpoint.RoutePattern.RawText ?? "unmatched"
+            : "unmatched";
+        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        context.RequestServices.GetRequiredService<OperationalMetrics>().RecordRequest(route, context.Request.Method, context.Response.StatusCode, elapsed);
+    }
+});
 app.UseCors(); app.UseAuthentication(); app.UseRateLimiter(); app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi(); else app.MapOpenApi().RequireAuthorization("Admin");
 app.MapMarketplace();
+app.MapPhaseOne();
 app.MapOperations();
 app.MapAdministration();
 app.MapAdminSecurity();

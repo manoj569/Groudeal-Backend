@@ -35,7 +35,7 @@ public sealed partial class Marketplace
         join p in db.Products on v.ProductId equals p.Id
         orderby c.Id
         select new AdminCampaignResponse(new OperationCampaignResponse(new CampaignResponse(c.Id, c.SellerId, c.ProductVariantId, c.SellerLocationId, c.Title, c.Description, c.ReferenceUnitPrice, c.GroupUnitPrice, c.TargetQuantity, c.ReservedQuantity,
-            c.TargetQuantity == 0 ? 0 : decimal.Round(c.ReservedQuantity / c.TargetQuantity * 100, 2), c.MinimumReservationQuantity, c.MaximumReservationQuantity, c.StartsAtUtc, c.ExpiresAtUtc, c.Status), c.CommittedQuantity, c.FulfilledQuantity, c.ConfirmationDeadlineUtc, c.PickupDeadlineUtc, c.DecisionAtUtc, c.DecisionReason),
+            c.TargetQuantity == 0 ? 0 : decimal.Round(c.ReservedQuantity / c.TargetQuantity * 100, 2), c.MinimumReservationQuantity, c.MaximumReservationQuantity, c.StartsAtUtc, c.ExpiresAtUtc, c.Status, c.UsesTierPricing), c.CommittedQuantity, c.FulfilledQuantity, c.ConfirmationDeadlineUtc, c.PickupDeadlineUtc, c.DecisionAtUtc, c.DecisionReason),
             s.BusinessName, s.VerificationStatus, p.Id, p.Name, v.VariantName, v.SKU, v.UnitOfMeasure, v.UnitQuantity, c.WorkerFailureCount, c.WorkerRetryAtUtc, c.WorkerErrorCode == null ? null : "processing_failed");
     public async Task<PageResponse<AdminCampaignResponse>> AdminCampaigns(Actor actor, PageRequest page, CampaignStatus? status, string? search, bool failedOnly, CancellationToken ct)
     {

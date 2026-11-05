@@ -118,6 +118,7 @@ public sealed partial class Marketplace
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var seller = await OwnedSeller(actor, ct); seller = await LockSeller(seller.Id, ct);
         var c = await LockCampaign(campaignId, ct); Require(c.SellerId == seller.Id, "Resource not found.", 404); Require(Eligible(seller), "Approved seller required.", 403);
+        Require(!c.UsesTierPricing, "Use tier campaign finalization and fulfillment.");
         if (c.DecisionKey == request.IdempotencyKey)
         {
             Require(c.DecisionApproved == approve && c.DecisionReason == request.Reason, "Idempotency key already used with a different decision.");
@@ -177,14 +178,16 @@ public sealed partial class Marketplace
         var location = await db.Locations.AsNoTracking().SingleAsync(l => l.Id == c.SellerLocationId, ct);
         var pickupId = await db.Pickups.Where(p => p.ReservationId == r.Id).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
         return new(ReservationDto(r, c), c.Status, Pickup(location), c.ConfirmationDeadlineUtc, c.PickupDeadlineUtc, pickupId,
-            pickupId != null ? "ViewPickup" : r.Status != ReservationStatus.Active ? "None" : c.Status == CampaignStatus.Open && clock.GetUtcNow() < c.ExpiresAtUtc ? "WaitForTargetOrCancel" : "WaitForSellerConfirmation");
+            pickupId != null ? "ViewPickup" : r.Status != ReservationStatus.Active ? "None" : c.Status == CampaignStatus.Open && clock.GetUtcNow() < c.ExpiresAtUtc ? "WaitForTargetOrCancel" : "WaitForSellerConfirmation", c.UsesTierPricing ? "ProviderPaymentTracked" : "NotTracked");
     }
 
     private async Task<PickupDetailResponse> PickupDto(PickupRecord p, CancellationToken ct)
     {
         var r = await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == p.ReservationId, ct);
+        var paid = await db.Campaigns.AnyAsync(c => c.Id == p.CampaignId && c.UsesTierPricing, ct);
+        var fulfillmentId = paid ? await db.OrderFulfillments.Where(f => f.PickupId == p.Id).Select(f => (Guid?)f.Id).SingleOrDefaultAsync(ct) : null;
         var action = p.Status == PickupStatus.Pending ? "WaitForReady" : p.Status == PickupStatus.ReadyForPickup && p.DeadlineUtc > clock.GetUtcNow() ? "RequestCodeAndCollect" : "None";
-        return new(p.Id, p.ReservationId, p.CampaignId, p.Status, r.Quantity, r.TotalPriceSnapshot, p.Instructions, p.DeadlineUtc, p.PaymentPolicy, action);
+        return new(p.Id, p.ReservationId, p.CampaignId, p.Status, r.Quantity, r.TotalPriceSnapshot, p.Instructions, p.DeadlineUtc, p.PaymentPolicy, paid ? "ViewPilotFulfillment" : action, paid, fulfillmentId);
     }
 
     public async Task<PickupDetailResponse> CustomerPickup(Actor actor, Guid id, CancellationToken ct) => await PickupDto(await db.Pickups.AsNoTracking().SingleOrDefaultAsync(p => p.Id == id && p.CustomerUserId == actor.UserId, ct) ?? throw Missing(), ct);
@@ -207,6 +210,7 @@ public sealed partial class Marketplace
         await db.Entry(pickup).ReloadAsync(ct);
         Require(customer ? pickup.CustomerUserId == actor.UserId : seller.OwnerUserId == actor.UserId, "Resource not found.", 404);
         Require(Eligible(seller) && await db.UsersProfile.AnyAsync(u => u.Id == seller.OwnerUserId && u.Status == AccountStatus.Active, ct), "Seller is unavailable.", 403);
+        Require(!campaign.UsesTierPricing, "Use the paid fulfillment pass workflow.");
         return (seller, campaign, pickup);
     }
 
@@ -282,7 +286,7 @@ public sealed partial class Marketplace
         Require(await db.Notifications.Where(n => n.Id == id && n.RecipientUserId == actor.UserId).ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAtUtc, n => n.ReadAtUtc ?? clock.GetUtcNow()), ct) == 1, "Resource not found.", 404);
     }
 
-    private IQueryable<GroupBuyCampaign> DueCampaigns(DateTimeOffset now) => db.Campaigns.AsNoTracking().Where(c =>
+    private IQueryable<GroupBuyCampaign> DueCampaigns(DateTimeOffset now) => db.Campaigns.AsNoTracking().Where(c => !c.UsesTierPricing).Where(c =>
         ((c.Status == CampaignStatus.Open || c.Status == CampaignStatus.Scheduled || c.Status == CampaignStatus.PendingApproval) && c.ExpiresAtUtc <= now) ||
         (c.Status == CampaignStatus.Scheduled && c.StartsAtUtc <= now) ||
         (c.Status == CampaignStatus.TargetReached && c.CommittedQuantity > 0) ||

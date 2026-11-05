@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 
 namespace GroupBuy.IntegrationTests;
+
 public partial class BackendTests
 {
     [Fact, Trait("Sprint5", "Security")]
@@ -31,39 +32,104 @@ public partial class BackendTests
     [Fact, Trait("Sprint5", "Security")]
     public async Task Production_requires_encrypted_key_storage_verified_database_TLS_and_redirects_API_HTTP()
     {
-        using (var missing = new ApiFactory(fixture.Connection, "Production")) Assert.Throws<InvalidOperationException>(() => missing.CreateClient());
-        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../.local", "production-guard-" + Guid.NewGuid().ToString("N")));
-        Directory.CreateDirectory(path); var keyPath = Path.Combine(path, "keys"); Directory.CreateDirectory(keyPath);
-        using var rsa = RSA.Create(2048); var request = new CertificateRequest("CN=Groudeal Synthetic Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
-        var certificatePath = Path.Combine(path, "synthetic.pfx"); var password = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)); File.WriteAllBytes(certificatePath, cert.Export(X509ContentType.Pfx, password));
-        var settings = new Dictionary<string, string?> { ["DataProtection:KeyPath"] = keyPath, ["DataProtection:CertificatePath"] = certificatePath, ["DataProtection:CertificatePassword"] = password, ["AllowedHosts"] = "localhost", ["Demo:Password"] = null };
-        var secure = new Npgsql.NpgsqlConnectionStringBuilder(fixture.Connection) { SslMode = Npgsql.SslMode.VerifyFull };
-        var environment = new Dictionary<string, string?> { ["DataProtection__KeyPath"] = keyPath, ["DataProtection__CertificatePath"] = certificatePath,
-            ["DataProtection__CertificatePassword"] = password, ["AllowedHosts"] = "localhost", ["ConnectionStrings__Database"] = fixture.Connection,
-            ["Demo__Password"] = null, ["Demo__AdminAuthenticatorKey"] = null };
-        var previous = environment.Keys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+        using (var missing = new ApiFactory(fixture.Connection, "Production"))
+        {
+            Assert.Throws<InvalidOperationException>(() => missing.CreateClient());
+        }
+
+        var path = Path.Combine(DatabaseFixture.FindRepositoryRoot(), ".local", "production-guard-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
         try
         {
-            // Minimal-host production guards run before WebApplicationFactory's late app-config hook.
-            foreach (var item in environment) Environment.SetEnvironmentVariable(item.Key, item.Value);
-            using (var insecure = new ApiFactory(fixture.Connection, "Production", settings)) {
-                var error = Assert.Throws<InvalidOperationException>(() => insecure.CreateClient()); Assert.Contains("VerifyFull", error.Message);
-            }
-            Environment.SetEnvironmentVariable("ConnectionStrings__Database", secure.ConnectionString);
-            using var f = new ApiFactory(secure.ConnectionString, "Production", settings);
-            using var client = ((WebApplicationFactory<Program>)f).CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
-            var redirect = await client.GetAsync("/api/v1/auth/me"); Assert.Equal(HttpStatusCode.TemporaryRedirect, redirect.StatusCode); Assert.Equal("https", redirect.Headers.Location!.Scheme);
-        var protector = Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.CreateProtector(f.Services.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(), "sprint5-synthetic-proof");
-        var protectedValue = Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.Protect(protector, "synthetic-value");
-        Assert.Equal("synthetic-value", Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.Unprotect(protector, protectedValue));
-        var files = Directory.GetFiles(keyPath, "key-*.xml"); Assert.NotEmpty(files);
-        foreach (var file in files) if (!System.Xml.Linq.XDocument.Load(file).Descendants().Any(e => e.Name.LocalName == "encryptedSecret")) Assert.Fail("Production Data Protection master keys were not encrypted.");
-        }
-        finally { foreach (var item in previous) Environment.SetEnvironmentVariable(item.Key, item.Value); }
+            var keyPath = Path.Combine(path, "keys");
+            Directory.CreateDirectory(keyPath);
+            using var rsa = RSA.Create(2048);
+            var request = new CertificateRequest("CN=Groudeal Synthetic Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+            var certificatePath = Path.Combine(path, "synthetic.pfx");
+            var password = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+            File.WriteAllBytes(certificatePath, cert.Export(X509ContentType.Pfx, password));
+            var settings = new Dictionary<string, string?>
+            {
+                ["DataProtection:KeyPath"] = keyPath,
+                ["DataProtection:CertificatePath"] = certificatePath,
+                ["DataProtection:CertificatePassword"] = password,
+                ["AllowedHosts"] = "localhost",
+                ["Demo:Password"] = null
+            };
+            var secure = new Npgsql.NpgsqlConnectionStringBuilder(fixture.Connection) { SslMode = Npgsql.SslMode.VerifyFull };
+            var environment = new Dictionary<string, string?>
+            {
+                ["DataProtection__KeyPath"] = keyPath,
+                ["DataProtection__CertificatePath"] = certificatePath,
+                ["DataProtection__CertificatePassword"] = password,
+                ["AllowedHosts"] = "localhost",
+                ["ConnectionStrings__Database"] = fixture.Connection,
+                ["Demo__Password"] = null,
+                ["Demo__AdminAuthenticatorKey"] = null
+            };
+            var previous = environment.Keys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+            try
+            {
+                // Minimal-host production guards run before WebApplicationFactory's late app-config hook.
+                foreach (var item in environment)
+                {
+                    Environment.SetEnvironmentVariable(item.Key, item.Value);
+                }
 
-        // Certificate is synthetic and PostgreSQL fixture does not serve TLS: no production TLS success is claimed.
+                using (var insecure = new ApiFactory(fixture.Connection, "Production", settings))
+                {
+                    var error = Assert.Throws<InvalidOperationException>(() => insecure.CreateClient());
+                    Assert.Contains("VerifyFull", error.Message);
+                }
+
+                Environment.SetEnvironmentVariable("ConnectionStrings__Database", secure.ConnectionString);
+                using var factory = new ApiFactory(secure.ConnectionString, "Production", settings);
+                using var client = ((WebApplicationFactory<Program>)factory).CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+                Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
+
+                var worker = factory.Services.GetRequiredService<WorkerHealthState>();
+                var wait = System.Diagnostics.Stopwatch.StartNew();
+                while (worker.Read().LastBatchErrorType is null && wait.Elapsed < TimeSpan.FromSeconds(5))
+                {
+                    await Task.Delay(25);
+                }
+
+                Assert.Equal("NpgsqlException", worker.Read().LastBatchErrorType);
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/health/ready")).StatusCode);
+                var redirect = await client.GetAsync("/api/v1/auth/me");
+                Assert.Equal(HttpStatusCode.TemporaryRedirect, redirect.StatusCode);
+                Assert.Equal("https", redirect.Headers.Location!.Scheme);
+
+                var protector = Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.CreateProtector(
+                    factory.Services.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
+                    "sprint5-synthetic-proof");
+                var protectedValue = Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.Protect(protector, "synthetic-value");
+                Assert.Equal("synthetic-value", Microsoft.AspNetCore.DataProtection.DataProtectionCommonExtensions.Unprotect(protector, protectedValue));
+                var files = Directory.GetFiles(keyPath, "key-*.xml");
+                Assert.NotEmpty(files);
+                foreach (var file in files)
+                {
+                    if (!System.Xml.Linq.XDocument.Load(file).Descendants().Any(e => e.Name.LocalName == "encryptedSecret"))
+                    {
+                        Assert.Fail("Production Data Protection master keys were not encrypted.");
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var item in previous)
+                {
+                    Environment.SetEnvironmentVariable(item.Key, item.Value);
+                }
+            }
+
+            // Certificate is synthetic and PostgreSQL fixture does not serve TLS: no production TLS success is claimed.
+        }
+        finally
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
     }
     [Fact, Trait("Sprint5", "Security")]
     public async Task Worker_exhaustion_is_visible_stops_automatic_attempts_and_resumes_only_after_reviewed_reset()

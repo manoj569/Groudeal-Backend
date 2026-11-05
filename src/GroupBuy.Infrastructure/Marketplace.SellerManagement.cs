@@ -48,6 +48,7 @@ public sealed partial class Marketplace
                 Require(!await campaigns.AnyAsync(c => c.CommittedQuantity > 0 ||
                     c.Status == CampaignStatus.PendingApproval || c.Status == CampaignStatus.Scheduled || c.Status == CampaignStatus.Open ||
                     c.Status == CampaignStatus.TargetReached || c.Status == CampaignStatus.AwaitingSellerConfirmation || c.Status == CampaignStatus.Confirmed || c.Status == CampaignStatus.FulfillmentInProgress ||
+                    c.Status == CampaignStatus.MinimumReached || c.Status == CampaignStatus.Finalizing || c.Status == CampaignStatus.Successful || c.Status == CampaignStatus.Preparing || c.Status == CampaignStatus.ReadyForFulfillment ||
                     db.Reservations.Any(r => r.CampaignId == c.Id && r.Status == ReservationStatus.Active) ||
                     db.Pickups.Any(pickup => pickup.CampaignId == c.Id && (pickup.Status == PickupStatus.Pending || pickup.Status == PickupStatus.ReadyForPickup)), ct),
                     "Product supports a live campaign or outstanding fulfillment. Resolve it before deactivation.");

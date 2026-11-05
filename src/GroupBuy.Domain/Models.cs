@@ -7,7 +7,7 @@ public enum ResourceStatus { Active, Inactive }
 public enum ProductType { Physical }
 public enum UnitOfMeasure { Kilogram, Litre, Piece, Pack }
 public enum FulfillmentMode { Pickup }
-public enum CampaignStatus { Draft, PendingApproval, Scheduled, Open, TargetReached, AwaitingSellerConfirmation, Confirmed, FulfillmentInProgress, Completed, Expired, Cancelled, Failed }
+public enum CampaignStatus { Draft, PendingApproval, Scheduled, Open, TargetReached, AwaitingSellerConfirmation, Confirmed, FulfillmentInProgress, Completed, Expired, Cancelled, Failed, MinimumReached, Finalizing, Successful, Preparing, ReadyForFulfillment }
 public enum ReservationStatus { Active, Cancelled, Expired, Completed }
 public abstract class Entity { public Guid Id { get; set; } = Guid.NewGuid(); }
 public abstract class TrackedEntity : Entity
@@ -74,6 +74,7 @@ public sealed class Product : TrackedEntity
 }
 public sealed class ProductVariant : Entity
 {
+    public Guid SellerId { get; set; }
     public Guid ProductId { get; set; }
     public string SKU { get; set; } = "";
     public string VariantName { get; set; } = "";
@@ -82,7 +83,7 @@ public sealed class ProductVariant : Entity
     public string AttributesJson { get; set; } = "{}";
     public bool IsActive { get; set; } = true;
 }
-public sealed class GroupBuyCampaign : TrackedEntity
+public sealed partial class GroupBuyCampaign : TrackedEntity
 {
     public Guid SellerId { get; set; }
     public Guid ProductVariantId { get; set; }

@@ -136,7 +136,7 @@ public partial class BackendTests
         var path = $"/api/v1/seller/pickups/{pickup.Id}";
         var response = await seller.GetAsync(path); Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync(); using var json = JsonDocument.Parse(body);
-        var allowed = new[] { "id", "reservationId", "campaignId", "status", "quantity", "totalPriceSnapshot", "instructions", "deadlineUtc", "paymentPolicy", "nextAction" };
+        var allowed = new[] { "id", "reservationId", "campaignId", "status", "quantity", "totalPriceSnapshot", "instructions", "deadlineUtc", "paymentPolicy", "nextAction", "usesTierPricing", "fulfillmentId" };
         Assert.Equal(allowed.Order(), json.RootElement.EnumerateObject().Select(field => field.Name).Order());
         Assert.Equal(pickup.Id, JsonSerializer.Deserialize<PickupDetailResponse>(body, Json)!.Id); Assert.DoesNotContain(code.Code, body);
         await using (var scope = f.Services.CreateAsyncScope())

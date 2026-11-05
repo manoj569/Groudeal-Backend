@@ -16,7 +16,7 @@ public record SellerSummaryResponse(int Products, int ActiveCampaigns, int Pendi
 public record SellerReservationResponse(Guid Id, Guid CampaignId, decimal Quantity, decimal UnitPriceSnapshot, decimal TotalPriceSnapshot, ReservationStatus Status, Guid? PickupId, PickupStatus? PickupStatus);
 public record CampaignPerformanceResponse(OperationCampaignResponse Campaign, int TotalReservations, int ActiveReservations, int CancelledReservations, int CollectedPickups, decimal FulfilledValueInr);
 public record ReservationDetailResponse(ReservationResponse Reservation, CampaignStatus CampaignStatus, PickupResponse Location, DateTimeOffset? ConfirmationDeadlineUtc, DateTimeOffset? PickupDeadlineUtc, Guid? PickupId, string NextAction, string PaymentStatus = "NotTracked");
-public record PickupDetailResponse(Guid Id, Guid ReservationId, Guid CampaignId, PickupStatus Status, decimal Quantity, decimal TotalPriceSnapshot, string Instructions, DateTimeOffset DeadlineUtc, PickupPaymentPolicy PaymentPolicy, string NextAction);
+public record PickupDetailResponse(Guid Id, Guid ReservationId, Guid CampaignId, PickupStatus Status, decimal Quantity, decimal TotalPriceSnapshot, string Instructions, DateTimeOffset DeadlineUtc, PickupPaymentPolicy PaymentPolicy, string NextAction, bool UsesTierPricing = false, Guid? FulfillmentId = null);
 public record NotificationResponse(Guid Id, NotificationType Type, Guid EntityId, DateTimeOffset CreatedAtUtc, DateTimeOffset? ReadAtUtc);
 public record OperationsHealthResponse(DateTimeOffset CheckedAtUtc, int RetryingCampaigns, int OverdueCampaigns, int MaximumFailureCount, int LegacyCampaignsRequiringReview, WorkerSnapshot? Worker = null, int ExhaustedCampaigns = 0, int WorkerMaxAttempts = 10);
 

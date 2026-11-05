@@ -11,13 +11,14 @@ public partial class BackendTests
     public async Task Runtime_role_can_register_and_login_without_DDL_or_audit_delete_rights()
     {
         var role = "sprint4_runtime_" + Guid.NewGuid().ToString("N");
+        var runtimePassword = DatabaseFixture.CreateTestRuntimePassword();
         await using var owner = new NpgsqlConnection(fixture.Connection); await owner.OpenAsync();
-        await using (var create = new NpgsqlCommand($"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; GRANT USAGE ON SCHEMA public TO {role}; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}; REVOKE UPDATE, DELETE ON audit_logs FROM {role};", owner))
+        await DatabaseFixture.CreateRuntimeLoginRoleAsync(owner, role, runtimePassword);
+        await using (var create = new NpgsqlCommand($"GRANT USAGE ON SCHEMA public TO {role}; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}; REVOKE UPDATE, DELETE ON audit_logs FROM {role};", owner))
             await create.ExecuteNonQueryAsync();
         try
         {
-            // This login exists only in the loopback trust-authenticated disposable fixture.
-            var settings = new NpgsqlConnectionStringBuilder(fixture.Connection) { Username = role, Password = "", Pooling = false };
+            var settings = DatabaseFixture.CreateRuntimeConnectionSettings(fixture.Connection, role, runtimePassword);
             using (var runtime = new ApiFactory(settings.ConnectionString))
             using (var client = runtime.CreateClient())
             {

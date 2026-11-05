@@ -12,11 +12,11 @@ EF migrations are the schema source of truth; startup never calls EnsureCreated 
 | seller_locations | Many locations per seller; active pickup flags and optional coordinates |
 | categories | Self-referencing parent, unique slug; seeded grocery hierarchy and inactive future roots |
 | products | Seller-owned, belongs to category; unique seller/slug |
-| product_variants | Product FK, unique SKU, unit definition, constrained JSON attributes |
-| group_buy_campaigns | Seller, variant, pickup location; composite seller/location FK prevents cross-seller pickup |
+| product_variants | Composite seller/product FK, unique seller/id and SKU, unit definition, constrained JSON attributes |
+| group_buy_campaigns | Seller, variant, pickup location; composite seller/variant and seller/location FKs prevent cross-seller references |
 | group_buy_reservations | Campaign/customer FKs, quantity, immutable price snapshots, lifecycle and idempotency key |
 | audit_logs | Nullable actor FK, action, entity, UTC timestamp, safe JSON metadata |
-| inventory | Unique variant FK, seller FK, available quantity and explicit optimistic version |
+| inventory | Unique variant FK, composite seller/variant FK, available quantity and explicit optimistic version |
 | pickup_records | Unique reservation FK, composite seller/campaign FK, customer and collector FKs, status, approved instruction snapshot, deadline, code hash/expiry and persisted attempt lockout |
 | internal_notifications | Recipient FK, notification type/entity, created/read times; globally unique recipient/type/entity deduplication key |
 

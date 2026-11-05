@@ -45,7 +45,7 @@ public static class DemoSeed
             {
                 var categoryIndex = new[] { 1, 2, 3, 5, 4 }[j];
                 var p = new Product { SellerId = s.Id, CategoryId = CategorySeed.All[categoryIndex].Id, Name = names[j], Slug = names[j].ToLowerInvariant(), Description = "Fictional demo product" };
-                var v = new ProductVariant { ProductId = p.Id, SKU = $"DEMO-{i}-{j}", VariantName = "1 unit", UnitOfMeasure = j == 4 ? UnitOfMeasure.Litre : UnitOfMeasure.Kilogram, UnitQuantity = 1 };
+                var v = new ProductVariant { SellerId = s.Id, ProductId = p.Id, SKU = $"DEMO-{i}-{j}", VariantName = "1 unit", UnitOfMeasure = j == 4 ? UnitOfMeasure.Litre : UnitOfMeasure.Kilogram, UnitQuantity = 1 };
                 var c = new GroupBuyCampaign { SellerId = s.Id, ProductVariantId = v.Id, SellerLocationId = l.Id, Title = $"Fictional {names[j]} Group", ReferenceUnitPrice = 100, GroupUnitPrice = 80, TargetQuantity = 100, MinimumReservationQuantity = 1, MaximumReservationQuantity = 20, StartsAtUtc = DateTimeOffset.UtcNow.AddHours(-1), ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(7), Status = CampaignStatus.Open, ReservedQuantity = 2 };
                 c.CommittedQuantity = c.TargetQuantity;
                 db.Inventories.Add(new Inventory { SellerId = s.Id, ProductVariantId = v.Id, AvailableQuantity = 100, Version = 1 });

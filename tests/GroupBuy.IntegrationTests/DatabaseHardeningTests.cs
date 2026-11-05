@@ -5,20 +5,22 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace GroupBuy.IntegrationTests;
+
 public partial class BackendTests
 {
     [Fact, Trait("Sprint5", "Security")]
     public async Task Runtime_grants_template_denies_Admin_assignment_MFA_reset_audit_tampering_and_migrations()
     {
         var role = "sprint5_runtime_" + Guid.NewGuid().ToString("N");
+        var runtimePassword = DatabaseFixture.CreateTestRuntimePassword();
         await using var owner = new NpgsqlConnection(fixture.Connection); await owner.OpenAsync();
-        await using (var create = new NpgsqlCommand($"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS", owner)) await create.ExecuteNonQueryAsync();
+        await DatabaseFixture.CreateRuntimeLoginRoleAsync(owner, role, runtimePassword);
         try
         {
-            var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../scripts/grant-runtime.sql"));
+            var path = Path.Combine(DatabaseFixture.FindRepositoryRoot(), "scripts", "grant-runtime.sql");
             var sql = (await File.ReadAllTextAsync(path)).Replace(":'app_role'", "@runtime_role");
             await using (var grants = new NpgsqlCommand(sql, owner)) { grants.Parameters.AddWithValue("runtime_role", role); await grants.ExecuteNonQueryAsync(); }
-            var connection = new NpgsqlConnectionStringBuilder(fixture.Connection) { Username = role, Password = "", Pooling = false }.ConnectionString;
+            var connection = DatabaseFixture.CreateRuntimeConnectionSettings(fixture.Connection, role, runtimePassword).ConnectionString;
             using var f = new ApiFactory(connection); using var client = f.CreateClient(); var user = await Register(client, "hardened-runtime"); await Login(client, user);
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/auth/me")).StatusCode);
             await using var runtime = new NpgsqlConnection(connection); await runtime.OpenAsync();

@@ -25,8 +25,8 @@ public record SellerResponse(Guid Id, string BusinessName, SellerType SellerType
 public record SellerReviewResponse(Guid Id, Guid OwnerUserId, string BusinessName, string ContactEmail, string ContactPhone, string? FssaiRegistrationNumber, VerificationStatus VerificationStatus, IReadOnlyList<PickupResponse> Locations);
 public record VariantResponse(Guid Id, string SKU, string VariantName, UnitOfMeasure UnitOfMeasure, decimal UnitQuantity, string AttributesJson);
 public record ProductResponse(Guid Id, Guid SellerId, Guid CategoryId, string Name, string Slug, string Description, ProductType ProductType, IReadOnlyList<VariantResponse> Variants);
-public record CampaignResponse(Guid Id, Guid SellerId, Guid ProductVariantId, Guid SellerLocationId, string Title, string Description, decimal ReferenceUnitPrice, decimal GroupUnitPrice, decimal TargetQuantity, decimal ReservedQuantity, decimal Progress, decimal MinimumReservationQuantity, decimal MaximumReservationQuantity, DateTimeOffset StartsAtUtc, DateTimeOffset ExpiresAtUtc, CampaignStatus Status);
-public record ReservationResponse(Guid Id, Guid CampaignId, decimal Quantity, decimal UnitPriceSnapshot, decimal TotalPriceSnapshot, ReservationStatus Status, DateTimeOffset CreatedAt, decimal CampaignProgress);
+public record CampaignResponse(Guid Id, Guid SellerId, Guid ProductVariantId, Guid SellerLocationId, string Title, string Description, decimal ReferenceUnitPrice, decimal GroupUnitPrice, decimal TargetQuantity, decimal ReservedQuantity, decimal Progress, decimal MinimumReservationQuantity, decimal MaximumReservationQuantity, DateTimeOffset StartsAtUtc, DateTimeOffset ExpiresAtUtc, CampaignStatus Status, bool UsesTierPricing = false);
+public record ReservationResponse(Guid Id, Guid CampaignId, decimal Quantity, decimal UnitPriceSnapshot, decimal TotalPriceSnapshot, ReservationStatus Status, DateTimeOffset CreatedAt, decimal CampaignProgress, bool UsesTierPricing = false);
 public record DashboardResponse(Guid SellerId, VerificationStatus VerificationStatus, int Products, int Campaigns, int ActiveReservations);
 
 public sealed class RegisterValidator : AbstractValidator<RegisterRequest>

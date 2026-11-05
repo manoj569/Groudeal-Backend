@@ -72,6 +72,68 @@ public partial class BackendTests
     }
     [Fact]
     [Trait("Sprint5", "Security")]
+    public async Task Admin_MFA_persists_and_cannot_be_bypassed_after_API_host_restart()
+    {
+        var keyPath = Path.Combine(DatabaseFixture.FindRepositoryRoot(), ".local", "mfa-restart-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(keyPath);
+        var settings = new Dictionary<string, string?>
+        {
+            ["DataProtection:KeyPath"] = keyPath,
+            ["Jwt:SigningKey"] = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48))
+        };
+        try
+        {
+            UserResponse? user = null;
+            {
+                Exception? setupFailure = null;
+                using var firstHost = new ApiFactory(fixture.Connection, overrides: settings);
+                using var firstClient = firstHost.CreateClientWithEnvironmentVariable("DataProtection__KeyPath", keyPath);
+                try
+                {
+                    var enrollment = await StartEnrollment(firstHost, firstClient);
+                    user = enrollment.User;
+                    var initialMfa = await Read<MfaTokenResponse>(await firstClient.PostAsJsonAsync("/api/v1/auth/mfa/verify", new MfaVerifyRequest(enrollment.Challenge.MfaChallenge!, await UnusedTotp(firstHost, user.Id, enrollment.Key))));
+                    Assert.Equal(10, initialMfa.RecoveryCodes.Count);
+                    Assert.NotEmpty(Directory.GetFiles(keyPath, "key-*.xml"));
+                }
+                catch (Exception ex) { setupFailure = ex; }
+
+                if (setupFailure is not null)
+                {
+                    var directServiceDiagnostic = "direct service replay succeeded";
+                    try
+                    {
+                        await using var scope = firstHost.Services.CreateAsyncScope();
+                        var identity = scope.ServiceProvider.GetRequiredService<IIdentityService>();
+                        await identity.Register(new RegisterRequest($"mfa-diagnostic-{Guid.NewGuid():N}@example.invalid", "Strong!Password123", "MFA Diagnostic"), CancellationToken.None);
+                    }
+                    catch (Exception directFailure) { directServiceDiagnostic = SafeTestExceptionSummary.Summarize(directFailure); }
+                    var setupType = SafeTestExceptionSummary.Summarize(setupFailure);
+                    throw new InvalidOperationException($"MFA HTTP setup failed; sanitized request failure: {setupType}; direct IdentityService registration: {directServiceDiagnostic}");
+                }
+            }
+
+            using var restartedHost = new ApiFactory(fixture.Connection, overrides: settings);
+            using var restartedClient = restartedHost.CreateClientWithEnvironmentVariable("DataProtection__KeyPath", keyPath);
+            var challenge = await PasswordChallenge(restartedClient, user!);
+
+            Assert.Null(challenge.AccessToken);
+            Assert.False(challenge.EnrollmentRequired);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await restartedClient.GetAsync("/api/v1/admin/audit-logs")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await restartedClient.PostAsJsonAsync("/api/v1/auth/mfa/enrollment", new MfaChallengeRequest(challenge.MfaChallenge!))).StatusCode);
+
+            var authenticated = await CompleteMfa(restartedClient, user!, challenge);
+            restartedClient.DefaultRequestHeaders.Authorization = new("Bearer", authenticated.AccessToken);
+            Assert.Equal(HttpStatusCode.OK, (await restartedClient.GetAsync("/api/v1/admin/audit-logs")).StatusCode);
+            Assert.DoesNotContain("SharedKey", System.Text.Json.JsonSerializer.Serialize(challenge), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(keyPath)) Directory.Delete(keyPath, recursive: true);
+        }
+    }
+    [Fact]
+    [Trait("Sprint5", "Security")]
     public async Task Mfa_challenges_expire_are_context_bound_and_cannot_be_used_as_bearer_tokens()
     {
         using var f = new ApiFactory(fixture.Connection); using var client = f.CreateClient(); var x = await StartEnrollment(f, client);
