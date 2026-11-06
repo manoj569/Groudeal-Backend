@@ -21,8 +21,13 @@ if (args.Contains("--seed-demo") && !builder.Environment.IsDevelopment()) throw 
 builder.Host.UseSerilog((_, log) => log.MinimumLevel.Information().MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning).MinimumLevel.Override("Microsoft.EntityFrameworkCore", Serilog.Events.LogEventLevel.Fatal).MinimumLevel.Override("Microsoft.AspNetCore.DataProtection", Serilog.Events.LogEventLevel.Fatal).MinimumLevel.Override("Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerHandler", Serilog.Events.LogEventLevel.Fatal).WriteTo.Console(new Serilog.Formatting.Json.JsonFormatter(renderMessage: true)));
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 64 * 1024);
 builder.Services.AddDbContext<MarketplaceDb>(o => o.UseNpgsql(builder.Configuration.GetConnectionString("Database") ?? throw new InvalidOperationException("Set ConnectionStrings__Database."), p => p.CommandTimeout(30)));
-builder.Services.AddIdentityCore<IdentityAccount>(o => { o.User.RequireUniqueEmail = true; o.Password.RequiredLength = 12; o.Lockout.MaxFailedAccessAttempts = 5; o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15); }).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<MarketplaceDb>().AddUserStore<ProtectedIdentityStore>().AddDefaultTokenProviders();
+builder.Services.AddIdentityCore<IdentityAccount>(o => { o.User.RequireUniqueEmail = false; /* Database unique email index remains authoritative; mobile-only customers have no email. */ o.Password.RequiredLength = 12; o.Lockout.MaxFailedAccessAttempts = 5; o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15); }).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<MarketplaceDb>().AddUserStore<ProtectedIdentityStore>().AddDefaultTokenProviders();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IOtpDeliveryProvider, UnconfiguredOtpDelivery>();
+builder.Services.AddSingleton<IGoogleSigningKeys, GoogleSigningKeys>();
+builder.Services.AddScoped<IGoogleCredentialValidator, GoogleCredentialValidator>();
+builder.Services.AddScoped<CustomerAuthenticationService>();
+builder.Services.AddHttpClient("GoogleSigningKeys", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<AuthenticationRateLimitSettings>();
 builder.Services.AddScoped<AdminMfaService>(); builder.Services.AddScoped<IAdminMfa>(s => s.GetRequiredService<AdminMfaService>()); builder.Services.AddScoped<AdminProvisioner>();
 ProductionConfiguration.Configure(builder);
@@ -82,12 +87,15 @@ builder.Services.AddRateLimiter(o => {
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("auth", c => c.RequestServices.GetRequiredService<AuthenticationRateLimitSettings>().Partition(c.Connection.RemoteIpAddress?.ToString() ?? "unknown"));
     o.AddPolicy("admin", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.AddPolicy("customer-login", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.AddPolicy("customer-auth", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("mfa", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("pickup", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("checkout", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.OnRejected = async (c, ct) => { c.HttpContext.Response.StatusCode = 429; await Results.Problem(statusCode: 429, title: "Rate limit exceeded.").ExecuteAsync(c.HttpContext); };
 });
 var app = builder.Build();
+app.ValidateCustomerAuthentication();
 try {
     var protector = app.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("Groudeal.StartupProbe.v1");
     if (protector.Unprotect(protector.Protect("startup-probe")) != "startup-probe") throw new InvalidOperationException("Protection probe failed.");
@@ -116,6 +124,7 @@ app.Use(async (context, next) => {
 app.UseCors(); app.UseAuthentication(); app.UseRateLimiter(); app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi(); else app.MapOpenApi().RequireAuthorization("Admin");
 app.MapMarketplace();
+app.MapCustomerAuthentication();
 app.MapPhaseOne();
 app.MapOperations();
 app.MapAdministration();

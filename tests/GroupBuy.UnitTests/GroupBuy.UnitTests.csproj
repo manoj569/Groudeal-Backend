@@ -18,5 +18,5 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <ItemGroup><ProjectReference Include="../../src/GroupBuy.Application/GroupBuy.Application.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/GroupBuy.Infrastructure/GroupBuy.Infrastructure.csproj" /></ItemGroup>
 </Project>

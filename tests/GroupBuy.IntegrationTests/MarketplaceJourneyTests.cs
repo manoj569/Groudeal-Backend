@@ -25,7 +25,9 @@ public partial class BackendTests
         var owner = own.Count > 0 ? customer : other; var reservation = own.Count > 0 ? own[0] : theirs[0];
         var race = await Task.WhenAll(owner.PostAsync($"/api/v1/me/reservations/{reservation.Id}/cancel", null),
             seller.PostAsJsonAsync($"/api/v1/seller/campaigns/{x.Campaign}/confirm", new DecisionRequest("actual-confirmation-race", "Stock checked")));
-        Assert.Equal(HttpStatusCode.Conflict, race[0].StatusCode); Assert.Equal(HttpStatusCode.OK, race[1].StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, race[0].StatusCode);
+        Assert.True(race[1].StatusCode == HttpStatusCode.OK,
+            $"Expected OK, received {race[1].StatusCode}; problem: {await race[1].Content.ReadAsStringAsync()}; safe diagnostics: {string.Join(" | ", f.SafeErrors)}");
         await using var scope = f.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<MarketplaceDb>();
         var campaign = await db.Campaigns.AsNoTracking().SingleAsync(c => c.Id == x.Campaign);
         Assert.Equal(CampaignStatus.Confirmed, campaign.Status); Assert.Equal(6, campaign.ReservedQuantity); Assert.Equal(6, campaign.CommittedQuantity);

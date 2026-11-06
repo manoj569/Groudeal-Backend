@@ -133,6 +133,7 @@ public sealed partial class MarketplaceDb(DbContextOptions<MarketplaceDb> option
             e.HasOne<IdentityAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
         });
         ConfigurePhaseOne(b);
+        ConfigureCustomerAuthentication(b);
         foreach (var entity in b.Model.GetEntityTypes()) foreach (var p in entity.GetProperties())
         {
             if (p.ClrType == typeof(decimal) || p.ClrType == typeof(decimal?))

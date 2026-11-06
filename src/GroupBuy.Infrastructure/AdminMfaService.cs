@@ -23,12 +23,12 @@ public static class SecurityTokens
     public static void Audit(MarketplaceDb db, Guid user, string action, string? reference = null) => db.AuditLogs.Add(new AuditLog {
         ActorUserId = reference is null ? user : null, EntityId = user, EntityType = "User", Action = action,
         CorrelationId = reference ?? Guid.NewGuid().ToString("N") });
-    public static async Task<TokenResponse> Issue(IdentityAccount account, UserManager<IdentityAccount> users, IConfiguration config, TimeProvider clock, bool mfa)
+    public static async Task<TokenResponse> Issue(IdentityAccount account, UserManager<IdentityAccount> users, IConfiguration config, TimeProvider clock, bool mfa, string method = "pwd")
     {
         var roles = await users.GetRolesAsync(account);
         if (roles.Contains("Admin") && (!mfa || !account.TwoFactorEnabled)) throw new InvalidOperationException("Admin requires MFA.");
         var expiry = clock.GetUtcNow().AddMinutes(mfa ? Math.Min(10, config.GetValue("Jwt:ExpiryMinutes", 15)) : config.GetValue("Jwt:ExpiryMinutes", 15));
-        var claims = new List<Claim> { new("sub", account.Id.ToString()), new("ver", account.TokenVersion.ToString()), new("jti", Guid.NewGuid().ToString()), new("amr", mfa ? "mfa" : "pwd") };
+        var claims = new List<Claim> { new("sub", account.Id.ToString()), new("ver", account.TokenVersion.ToString()), new("jti", Guid.NewGuid().ToString()), new("amr", mfa ? "mfa" : method) };
         claims.AddRange(roles.Select(role => new Claim("role", role)));
         var token = new JwtSecurityToken(config["Jwt:Issuer"], config["Jwt:Audience"], claims, clock.GetUtcNow().UtcDateTime, expiry.UtcDateTime,
             new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:SigningKey"]!)), SecurityAlgorithms.HmacSha256));

@@ -54,7 +54,9 @@ public sealed class IdentityService(MarketplaceDb db, UserManager<IdentityAccoun
     }
     public async Task Logout(Guid userId, CancellationToken ct)
     {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.Users.Where(x => x.Id == userId).ExecuteUpdateAsync(s => s.SetProperty(x => x.TokenVersion, x => x.TokenVersion + 1), ct);
+        SecurityTokens.Audit(db, userId, "Logout"); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
     private static readonly string DummyHash = new PasswordHasher<IdentityAccount>().HashPassword(new(), Guid.NewGuid().ToString());
     private static BusinessException InvalidLogin() => new(401, "invalid_login", "Invalid credentials or account unavailable.");

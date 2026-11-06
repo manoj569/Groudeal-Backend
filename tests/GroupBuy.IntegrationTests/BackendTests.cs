@@ -84,6 +84,19 @@ public sealed class DatabaseFixture : IAsyncLifetime
 }
 public sealed class ApiFactory(string connection, string environment = "Development", Dictionary<string, string?>? overrides = null, bool disableWorker = false) : WebApplicationFactory<Program>
 {
+    internal readonly System.Collections.Concurrent.ConcurrentQueue<string> SafeErrors = new();
+    private sealed class SafeErrorLogger(ILoggerFactory factory, System.Collections.Concurrent.ConcurrentQueue<string> errors) : ILogger<GroupBuy.API.Errors>
+    {
+        private readonly ILogger inner = factory.CreateLogger(typeof(GroupBuy.API.Errors).FullName!);
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => inner.BeginScope(state);
+        public bool IsEnabled(LogLevel level) => inner.IsEnabled(level);
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState,Exception?,string> formatter)
+        {
+            // Errors emits bounded types and database classifications, never exception messages.
+            if (level >= LogLevel.Error) errors.Enqueue(formatter(state, exception));
+            inner.Log(level, id, state, exception, formatter);
+        }
+    }
     private static readonly object HostStartupLock = new();
     internal static readonly System.Runtime.CompilerServices.ConditionalWeakTable<HttpClient, ApiFactory> ClientFactories = new();
     public new HttpClient CreateClient() => CreateClientWithEnvironmentVariable(null, null);
@@ -105,6 +118,7 @@ public sealed class ApiFactory(string connection, string environment = "Developm
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
+        builder.ConfigureServices(s => s.AddSingleton<ILogger<GroupBuy.API.Errors>>(p => new SafeErrorLogger(p.GetRequiredService<ILoggerFactory>(), SafeErrors)));
         if(disableWorker)builder.ConfigureServices(s=>{
             foreach(var service in s.Where(d=>d.ImplementationType==typeof(GroupBuy.API.ExpiryWorker)).ToArray())s.Remove(service);
         });

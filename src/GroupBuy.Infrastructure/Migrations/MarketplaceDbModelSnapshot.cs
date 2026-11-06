@@ -1479,6 +1479,62 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("GroupBuy.Infrastructure.CustomerChallenge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("ConsumedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<int?>("TokenVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("Channel", "Destination", "CreatedAtUtc");
+
+                    b.ToTable("customer_auth_challenges", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_customer_challenge_attempts", "\"FailedAttempts\" BETWEEN 0 AND 5");
+                        });
+                });
+
             modelBuilder.Entity("GroupBuy.Infrastructure.IdentityAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1552,7 +1608,40 @@ namespace GroupBuy.Infrastructure.Migrations
                         .IsUnique()
                         .HasDatabaseName("UserNameIndex");
 
+                    b.HasIndex("PhoneNumber")
+                        .IsUnique();
+
                     b.ToTable("identity_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("GroupBuy.Infrastructure.UserConsent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DocumentType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("DocumentVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "DocumentType", "DocumentVersion")
+                        .IsUnique();
+
+                    b.ToTable("user_consents", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", b =>
@@ -1984,6 +2073,23 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.HasOne("GroupBuy.Infrastructure.IdentityAccount", null)
                         .WithOne()
                         .HasForeignKey("GroupBuy.Domain.User", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("GroupBuy.Infrastructure.CustomerChallenge", b =>
+                {
+                    b.HasOne("GroupBuy.Infrastructure.IdentityAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("GroupBuy.Infrastructure.UserConsent", b =>
+                {
+                    b.HasOne("GroupBuy.Infrastructure.IdentityAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
