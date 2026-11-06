@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace GroupBuy.IntegrationTests;
 
@@ -16,6 +17,66 @@ public sealed class RenderFreeIngressTests
 {
     private const string Host = "ingress-proof.onrender.com";
     private const string Origin = "https://groudeal-frontend.vercel.app";
+
+    private sealed class DiagnosticLogger : ILogger<RenderFreeIngressAdapter>
+    {
+        public List<Dictionary<string, object?>> Events { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Assert.Equal(LogLevel.Information, level);
+            Assert.Null(exception);
+            Events.Add(Assert.IsAssignableFrom<IEnumerable<KeyValuePair<string, object?>>>(state).ToDictionary(p => p.Key, p => p.Value));
+        }
+    }
+
+    [Theory]
+    [InlineData(true, "198.51.100.20", "/api/probe", true)]
+    [InlineData(true, "::ffff:127.0.0.1", "/api/probe", false)]
+    [InlineData(true, null, "/api/probe", false)]
+    [InlineData(true, "198.51.100.20", "/health/live", false)]
+    [InlineData(true, "198.51.100.20", "/health/ready", false)]
+    [InlineData(false, "198.51.100.20", "/api/probe", false)]
+    public async Task Temporary_diagnostics_log_only_allowlisted_scalars_and_actual_outcome(bool enabled, string? address, string path, bool reconstructed)
+    {
+        var logger = new DiagnosticLogger();
+        using var services = new ServiceCollection().AddSingleton<ILogger<RenderFreeIngressAdapter>>(logger).BuildServiceProvider();
+        var context = new DefaultHttpContext { RequestServices = services };
+        context.Request.Scheme = "http"; context.Request.Host = new HostString(Host); context.Request.Path = path;
+        context.Connection.LocalPort = 10000;
+        context.Connection.RemoteIpAddress = address is null ? null : IPAddress.Parse(address);
+        var originalPeer = context.Connection.RemoteIpAddress;
+        const string canary = "synthetic-do-not-log-canary";
+        context.Request.QueryString = new QueryString("?private=" + canary);
+        foreach (var header in new[] { "X-Forwarded-For", "X-Forwarded-Proto", "Forwarded", "Authorization", "Cookie" })
+            context.Request.Headers[header] = canary;
+        var nextCalled = false;
+        await new RenderFreeIngressAdapter(enabled ? Host : null, 10000).InvokeAsync(context, _ => { nextCalled = true; return Task.CompletedTask; });
+        Assert.True(nextCalled);
+        Assert.Equal(reconstructed ? "https" : "http", context.Request.Scheme);
+        Assert.Equal(originalPeer, context.Connection.RemoteIpAddress);
+        if (!enabled) { Assert.Empty(logger.Events); return; }
+        Assert.Equal(2, logger.Events.Count);
+        var inputs = logger.Events[0];
+        string[] expected = ["Scheme", "Host", "HostPort", "LocalPort", "RemoteIpIsNull", "RemoteIpIsLoopback", "RemoteIpIsIPv4MappedIPv6",
+            "ConfiguredPort", "ExternalHostname", "ExternalHostnameConfigured", "IsLiveHealthPath", "IsReadyHealthPath", "SchemeIsHttp",
+            "RemoteIpPresent", "RemoteIpNotLoopback", "LocalPortMatches", "HostMatches", "HostPortAllowed", "{OriginalFormat}"];
+        Assert.Equal(expected.Order(), inputs.Keys.Order());
+        Assert.Equal("http", inputs["Scheme"]); Assert.Equal(Host, inputs["Host"]); Assert.Null(inputs["HostPort"]);
+        Assert.Equal(10000, inputs["LocalPort"]); Assert.Equal(10000, inputs["ConfiguredPort"]); Assert.Equal(Host, inputs["ExternalHostname"]);
+        Assert.Equal(address is null, inputs["RemoteIpIsNull"]);
+        Assert.Equal(address?.StartsWith("::ffff:") == true, inputs["RemoteIpIsIPv4MappedIPv6"]);
+        Assert.Equal(address == "::ffff:127.0.0.1", inputs["RemoteIpIsLoopback"]);
+        Assert.Equal(new[] { "SchemeReconstructed", "{OriginalFormat}" }.Order(), logger.Events[1].Keys.Order());
+        Assert.Equal(reconstructed, logger.Events[1]["SchemeReconstructed"]);
+        foreach (var value in logger.Events.SelectMany(e => e.Values))
+        {
+            Assert.True(value is null or string or int or bool);
+            Assert.DoesNotContain(canary, value?.ToString() ?? "");
+            if (address is not null) Assert.DoesNotContain(address, value?.ToString() ?? "");
+        }
+    }
     private static WebApplicationBuilder Builder(bool enabled = true, Dictionary<string, string?>? overrides = null, string environment = "Production")
     {
         var b = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = environment });

@@ -41,10 +41,20 @@ public sealed record RenderFreeIngressAdapter(string? ExternalHostname, int Port
     {
         // Probe behavior stays independent of ingress reconstruction, including local CLI checks.
         if (ExternalHostname is null || context.Request.Path == "/health/live" || context.Request.Path == "/health/ready")
+        {
+            if (ExternalHostname is not null)
+            {
+                LogInputs(context);
+                context.RequestServices.GetRequiredService<ILogger<RenderFreeIngressAdapter>>()
+                    .LogInformation("Render Free ingress outcome: SchemeReconstructed={SchemeReconstructed}", false);
+            }
             return next(context);
+        }
 
         var peer = context.Connection.RemoteIpAddress;
         if (peer is { IsIPv4MappedToIPv6: true }) peer = peer.MapToIPv4();
+        var reconstructed = false;
+        LogInputs(context);
         if (context.Request.Scheme == "http" && peer is not null && !IPAddress.IsLoopback(peer)
             && context.Connection.LocalPort == Port
             && string.Equals(context.Request.Host.Host, ExternalHostname, StringComparison.OrdinalIgnoreCase)
@@ -52,8 +62,34 @@ public sealed record RenderFreeIngressAdapter(string? ExternalHostname, int Port
         {
             // No request header is evidence for this decision. The acknowledged platform isolation is.
             context.Request.Scheme = "https";
+            reconstructed = true;
         }
+        context.RequestServices.GetRequiredService<ILogger<RenderFreeIngressAdapter>>()
+            .LogInformation("Render Free ingress outcome: SchemeReconstructed={SchemeReconstructed}", reconstructed);
         return next(context);
+    }
+
+    // Temporary diagnostics: keep this explicit allowlist; never log the request or connection object.
+    private void LogInputs(HttpContext context)
+    {
+        var originalPeer = context.Connection.RemoteIpAddress;
+        var mapped = originalPeer is { IsIPv4MappedToIPv6: true };
+        var peer = mapped ? originalPeer!.MapToIPv4() : originalPeer;
+        var loopback = peer is not null && IPAddress.IsLoopback(peer);
+        context.RequestServices.GetRequiredService<ILogger<RenderFreeIngressAdapter>>().LogInformation(
+            "Render Free ingress inputs: Scheme={Scheme} Host={Host} HostPort={HostPort} LocalPort={LocalPort} " +
+            "RemoteIpIsNull={RemoteIpIsNull} RemoteIpIsLoopback={RemoteIpIsLoopback} RemoteIpIsIPv4MappedIPv6={RemoteIpIsIPv4MappedIPv6} " +
+            "ConfiguredPort={ConfiguredPort} ExternalHostname={ExternalHostname} " +
+            "ExternalHostnameConfigured={ExternalHostnameConfigured} IsLiveHealthPath={IsLiveHealthPath} IsReadyHealthPath={IsReadyHealthPath} " +
+            "SchemeIsHttp={SchemeIsHttp} RemoteIpPresent={RemoteIpPresent} RemoteIpNotLoopback={RemoteIpNotLoopback} " +
+            "LocalPortMatches={LocalPortMatches} HostMatches={HostMatches} HostPortAllowed={HostPortAllowed}",
+            context.Request.Scheme, context.Request.Host.Host, context.Request.Host.Port, context.Connection.LocalPort,
+            originalPeer is null, loopback, mapped, Port, ExternalHostname,
+            ExternalHostname is not null, context.Request.Path == "/health/live", context.Request.Path == "/health/ready",
+            context.Request.Scheme == "http", peer is not null, !loopback,
+            context.Connection.LocalPort == Port,
+            string.Equals(context.Request.Host.Host, ExternalHostname, StringComparison.OrdinalIgnoreCase),
+            context.Request.Host.Port is null or 443);
     }
 }
 
