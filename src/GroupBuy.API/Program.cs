@@ -109,6 +109,7 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["Jwt:Issuer"]) || string.IsN
 if (builder.Configuration.GetValue("Jwt:ExpiryMinutes", 15) is < 1 or > 60) throw new InvalidOperationException("JWT expiry must be 1–60 minutes.");
 if (builder.Configuration.GetValue("Operations:ConfirmationMinutes", 60) is < 1 or > 1440 || builder.Configuration.GetValue("Operations:PickupHours", 48) is < 1 or > 168) throw new InvalidOperationException("Confirmation must be 1–1440 minutes and pickup 1–168 hours.");
 app.UseForwardedHeaders();
+app.UseRenderFreeIngress();
 app.UseExceptionHandler(); app.UseStatusCodePages(async c => await Results.Problem(statusCode: c.HttpContext.Response.StatusCode).ExecuteAsync(c.HttpContext));
 if (!app.Environment.IsDevelopment()) { app.UseHsts(); app.UseWhen(c => c.Request.Path != "/health/live" && c.Request.Path != "/health/ready", branch => branch.UseHttpsRedirection()); }
 app.Use(async (c, next) => { c.Response.Headers.XContentTypeOptions = "nosniff"; c.Response.Headers["Referrer-Policy"] = "no-referrer"; c.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"; c.Response.Headers.CacheControl = "no-store"; await next(); });

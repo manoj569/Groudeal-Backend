@@ -19,6 +19,7 @@ public static class ProductionConfiguration
     {
         if (!builder.Environment.IsDevelopment()) builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
         var c = builder.Configuration; var production = !builder.Environment.IsDevelopment();
+        builder.Services.AddSingleton(RenderFreeIngressAdapter.Validate(c, builder.Environment));
         builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(30));
         builder.Services.Configure<ForwardedHeadersOptions>(o => {
             o.ForwardLimit = 1; o.RequireHeaderSymmetry = true;

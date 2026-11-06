@@ -2,15 +2,37 @@
 
 Scope: backend code and local verification. No actual Neon connection, production migration, Render deployment, live provider activation, legal approval or commercial approval is performed by this task. Render Free is a controlled MVP/integration host, not an availability guarantee for payment deadlines or continuous workers.
 
-## Ingress prerequisite — resolve before customer traffic
+## Conditional ingress resolution — verify before customer traffic
 
 The API retains explicit trusted-proxy IPs, one symmetric `X-Forwarded-For`/`X-Forwarded-Proto` hop, HTTPS redirection, explicit hosts and explicit CORS. Forwarded headers from other peers are ignored. Unrestricted `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` is rejected in Production.
 
-Render documents TLS termination followed by HTTP forwarding to the application's port. The reviewed public documentation does not provide a stable trusted-ingress peer IP list for this service. **Render ingress trust is an external deployment blocker until Render supplies a verified, supportable peer-IP set and forwarding behavior for this service.** Enter only those addresses in `Proxy__KnownProxies__0`, etc. Outbound IP addresses, a DNS result for the public hostname, guessed private ranges and `0.0.0.0/0` are not substitutes.
+Explicit trusted proxy IPs remain preferred where a verified, supportable ingress peer set and compatible forwarding behavior are available. Enter only verified ingress addresses in `Proxy__KnownProxies__0`, etc. Outbound IP addresses, a DNS result for the public hostname, guessed private ranges and `0.0.0.0/0` are not substitutes.
 
-Without a trusted peer, process/readiness probes can work but application requests through the TLS-terminating proxy will redirect repeatedly. Do not disable redirection, clear all trust lists or switch to Development to bypass this. If Render cannot supply a stable supported trust boundary, use an approved ingress architecture/hosting target before customer activation. The code does not invent a Render trust policy. Local tests prove spoof resistance and configured-peer behavior, not Render ingress acceptance.
+Render Free public-edge mode is a separate, explicit alternative. Render documents that public HTTP is redirected to HTTPS before forwarding, the application's listening port is not directly public, TLS terminates at Render, and Free web services cannot receive private-network traffic. Under this reviewed topology, the adapter reconstructs the external HTTPS scheme without reading forwarded headers. This is a platform-isolation assumption, not per-request authentication. `RENDER=true`, Host and other environment markers do not independently prove that isolation or the Free plan. The operator must verify and acknowledge it; the application cannot detect a later plan/network change.
 
-References: [Render web services: ports and TLS termination](https://render.com/docs/web-services), [Render Free limitations](https://render.com/docs/free).
+Set these non-secret application variables for the current deployment:
+
+```text
+Hosting__RenderFreeIngress__Enabled=true
+Hosting__RenderFreeIngress__PublicEdgeIsolationAcknowledged=true
+Hosting__RenderFreeIngress__ExternalHostname=groudeal-backend.onrender.com
+AllowedHosts=groudeal-backend.onrender.com
+PORT=10000
+```
+
+Retain the existing explicit CORS origin `https://groudeal-frontend.vercel.app` in `Cors__Origins__0`. Render must supply `RENDER=true`, `RENDER_SERVICE_TYPE=web`, `RENDER_EXTERNAL_HOSTNAME=groudeal-backend.onrender.com`, and `RENDER_EXTERNAL_URL=https://groudeal-backend.onrender.com`. Do not forge platform markers to pass validation. Mode activation requires Production, all matching settings, a single exact onrender.com AllowedHosts hostname, and no `Proxy__KnownProxies` entries. Unrestricted forwarding remains forbidden. Invalid enabled configuration fails during startup; the mode defaults to disabled.
+
+Only non-loopback HTTP on the configured listener with that exact public Host (no port or port 443) is normalized. Health paths are excluded; local CLI readiness remains HTTP. HSTS and HTTPS redirection remain installed. Explicit trusted-proxy forwarding remains unchanged in deployments with this mode disabled. Do not combine the two modes.
+
+No original-client-IP trust is established: the socket peer remains the client IP. IP-based rate budgets can consequently be shared behind Render; forged X-Forwarded-For does not create new budgets. Destination/user quotas and authentication controls remain unchanged.
+
+**Changing plan or infrastructure to permit inbound private/direct traffic requires a new ingress review before this mode remains enabled.** If that isolation cannot be established, the ingress blocker remains and an authenticated/trusted ingress architecture is required. A remote caller that could directly reach this listener with the expected Host would be indistinguishable from the edge; Host/port checks do not solve that problem.
+
+Rollback: set `Hosting__RenderFreeIngress__Enabled=false` and restart/redeploy the reviewed version. This restores the previous strict scheme/HTTPS behavior; without verified trusted proxies, API requests through Render will again redirect repeatedly. Health exemptions remain. Do not disable redirection, clear trust lists or switch to Development.
+
+After controlled deployment, verify public HTTP redirects at the edge, HTTPS API requests do not self-redirect, expected 200/401/403 responses, HSTS, exact allowed/disallowed CORS and preflight behavior, both health paths, and the Free-plan/no-direct/no-private-ingress assumptions. Local tests cannot prove the deployed platform boundary. No deployment is performed by the local verification script.
+
+References: [Render web services: ports and TLS termination](https://render.com/docs/web-services), [Render private networking: Free inbound restriction](https://render.com/docs/private-network), [Render environment variables](https://render.com/docs/environment-variables), [Microsoft forwarded-header security guidance](https://learn.microsoft.com/en-us/aspnet/core/breaking-changes/8/forwarded-headers-unknown-proxies?view=aspnetcore-10.0).
 
 ## 1. Prepare the database and deployment order
 
@@ -138,7 +160,7 @@ The app respects Render's `PORT` and binds `http://0.0.0.0:<PORT>`. Use Render's
 | `DataProtection__CertificateBase64` | Secret PKCS#12 contents |
 | `DataProtection__CertificatePassword` | Secret PFX password |
 | `DataProtection__PreviousCertificates__n__Base64` / `Password` | Retained decryption certificates when rotating |
-| `Proxy__KnownProxies__0` | **Verified trusted Render ingress peer IP only; unresolved prerequisite above** |
+| `Proxy__KnownProxies__0` | Verified ingress peer only in explicit-proxy mode; absent in Render Free public-edge mode |
 | `ASPNETCORE_FORWARDEDHEADERS_ENABLED` | Omit or `false`; unrestricted `true` is rejected |
 | `PORT` | Render-supplied, normally `10000` |
 | `HealthChecks__Host` | Optional actual allowed hostname for internal CLI health probe when needed |
@@ -209,7 +231,15 @@ All test-stage TRX counters were read back: zero failed, skipped or aborted test
 
 Development failures were not counted as passing validation: the first development run had a duplicate synthetic contact value across two metadata cases and a real-process readiness failure; the contact values were made unique. A subsequent diagnostic run exposed an unhandled warm-up HTTP timeout in readiness polling. The loop now records initial connection unavailability/timeouts as non-ready probes while retaining its original deadline and per-request timeout; failure to become ready remains fatal and returns sanitized diagnostics. The production loopback CLI probe was hardened to avoid environment proxies and redirects. No production timeout or existing regression assertion was weakened. These development logs remain under `.local/render-development-*` / `.local/render-kestrel-diagnostic.log`; none is committed.
 
-The local code-level gate is clean. **Actual Render customer traffic remains blocked by the ingress prerequisite in section 1 and by any unapproved external activation gates.** Actual Neon migration, Render deployment, ingress/TLS acceptance, Google/SMS/email/Razorpay acceptance and legal approval were not performed. Existing disk-backed environments retain their mode until separately approved key-ring transfer.
+The preceding results describe the earlier Data Protection/authentication revision, not validation of later ingress changes. **Render ingress is conditionally resolvable using the mode above; actual customer traffic still requires deployed ingress/TLS acceptance and any external activation gates.** That earlier local gate did not perform actual Neon migration, Render deployment, ingress/TLS acceptance, Google/SMS/email/Razorpay acceptance or legal approval. Existing disk-backed environments retain their mode until separately approved key-ring transfer.
+
+## Render Free ingress revision validation — 2026-11-07
+
+The complete `scripts/verify-render-readiness.ps1` gate passed with evidence in `.local/render-ingress-final/` (local ignored artifacts): build zero warnings/errors; all 84 unit tests; all 212 integration tests; 40 focused ingress cases; 31 focused authentication cases; 46 Admin/security cases; empty and upgrade migrations; no EF pending-model changes; three restart-protection cases; and 16 existing production/explicit-proxy cases. Focused subsets overlap the complete suites: **296 distinct tests**, zero failed/skipped/aborted.
+
+The new ingress tests cover no-header and spoofed-header HTTPS reconstruction, unchanged peer/host, exact CORS and preflights, unauthenticated access denial, forged-IP rate-budget resistance, direct/local HTTP redirection, arbitrary-host rejection, unchanged health-path schemes and startup configuration rejection. They simulate edge delivery through server-controlled connection metadata; they do not prove Render's deployed network isolation. Existing real-Kestrel HTTP/spoof tests retain their redirect requirement.
+
+The final gate reported zero secret-pattern findings across the six changed files, zero new Testcontainers resources remaining and zero new backend API processes remaining. Only this documentation result was appended after the gate; application/test/script sources were unchanged. No frontend, schema, activation settings, protected Sprint 5.1 resources or production secrets were changed. No commit, push or deployment was performed. The fix is ready for a reviewed commit/push and controlled deployment acceptance under the conditional ingress requirements above.
 
 ### Exact task file manifest
 

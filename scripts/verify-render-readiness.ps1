@@ -41,6 +41,7 @@ try {
  $integration = 'tests/GroupBuy.IntegrationTests/GroupBuy.IntegrationTests.csproj'
  Invoke-Tests '03-new-unit' $unit 'FullyQualifiedName~DataProtectionConfigurationTests' 13
  Invoke-Tests '04-all-unit' $unit '' 84
+ Invoke-Tests '04a-render-ingress' $integration 'FullyQualifiedName~RenderFreeIngressTests' 40
  $new = 'FullyQualifiedName~DataProtectionPersistenceTests|FullyQualifiedName~RenderProductionConfigurationTests|FullyQualifiedName~Me_contract_returns|FullyQualifiedName~Me_immediately|FullyQualifiedName~Google_only_me|FullyQualifiedName~Gmail_address|FullyQualifiedName~Otp_error_codes'
  Invoke-Tests '05-new-postgres' $integration $new 29
  Invoke-Tests '06-authentication' $integration 'FullyQualifiedName~CustomerAuthenticationTests|FullyQualifiedName~Authentication|FullyQualifiedName~Jwt_|FullyQualifiedName~Removed_roles|FullyQualifiedName~credential_budget' 24
