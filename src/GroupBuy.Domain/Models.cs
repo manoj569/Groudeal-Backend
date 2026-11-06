@@ -144,6 +144,7 @@ public sealed class AuditLog : Entity
 }
 public sealed class BusinessException(int statusCode, string code, string message) : Exception(message)
 {
+    public string? ErrorCode { get; init; }
     public int StatusCode { get; } = statusCode;
     public string Code { get; } = code;
 }

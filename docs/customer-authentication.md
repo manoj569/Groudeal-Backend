@@ -1,5 +1,7 @@
 # Phase 1 customer authentication
 
+The Render/account-contract extension is documented in [Render Free deployment](render-free-deployment.md). Earlier validation history and the original implementation manifest below describe the authentication foundation; the current deployment report records the extension's own validation and file set.
+
 Implementation and local validation only. All new login methods are disabled by default. No live credentials or providers are provisioned.
 
 ## Architecture and identity
@@ -25,7 +27,47 @@ All routes are under `/api/v1`:
 | POST | `/me/link/email/verify`, `/me/link/mobile/verify` | Same verification body; original Customer authentication required |
 | POST | `/auth/logout` | Existing authenticated endpoint; revokes all JWTs for the account |
 
-Login returns `{ session: { accessToken, expiresAtUtc }, authenticated: true, user: { id, displayName, profileCompleted, emailVerified, phoneVerified, consentRequired, termsVersion, privacyVersion } }`. Profile/link/consent responses return the same `user` shape directly. Challenge responses contain only challenge ID and expiry. Invalid or expired credentials return 401; unavailable methods 503; identity conflicts 409; throttles 429. No endpoint performs redirects or accepts return URLs. Unknown JSON properties are rejected by the existing strict serializer, including role and return URL injection.
+Login returns `{ session: { accessToken, expiresAtUtc }, authenticated: true, user: <CustomerProfile> }`. `/me`, profile/link/consent responses return that same CustomerProfile directly. Existing fields are retained and the account contract adds `email`, `mobile`, `connectedMethods` and `consent`:
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "displayName": "Customer",
+  "profileCompleted": true,
+  "emailVerified": false,
+  "phoneVerified": false,
+  "consentRequired": true,
+  "termsVersion": null,
+  "privacyVersion": null,
+  "email": null,
+  "mobile": null,
+  "connectedMethods": { "google": true, "email": false, "mobile": false },
+  "consent": { "termsAcceptedVersion": null, "privacyAcceptedVersion": null, "consentRequired": true }
+}
+```
+
+`phoneVerified` remains the established field name; `mobile` is the contact value. Email uses Identity's normalized email (falling back to its email when normalization is absent); mobile uses Identity's canonical phone. Verification flags come from Identity, not marketplace copies. Missing contacts are null and cannot be reported verified. Connected Google requires actual `Google` external-login membership, including for Gmail addresses. Connected email/mobile require their nonempty verified Identity contacts; these flags describe linked methods independently of whether a delivery feature is operationally enabled.
+
+`termsVersion` and `privacyVersion` remain the configured **current** versions. Nested consent exposes each document's latest persisted accepted version, ordered by acceptance time with a deterministic ID tie-break. `consentRequired` checks acceptance of the configured current versions; missing versions require consent and cannot be accepted. Production customer-provider/pilot activation additionally requires both approved version identifiers. No legal text is generated. Linking returns freshly queried account metadata and a subsequent authenticated `/me` immediately reflects persisted state.
+
+Challenge responses contain only challenge ID and expiry. Invalid or expired credentials return 401; unavailable methods 503; identity conflicts 409; throttles 429. No endpoint performs redirects or accepts return URLs. Unknown JSON properties are rejected by the existing strict serializer, including role and return URL injection.
+
+### Machine-readable errors
+
+Problem Details retains the existing `title`, status, generic detail and trace ID. The additive `code` extension is the machine-readable contract. Existing titles such as `invalid_challenge`, `challenge_rate_limited`, `account_conflict`, and `authentication_unavailable` remain unchanged.
+
+| `code` | Meaning |
+| --- | --- |
+| `otp_invalid` | Wrong/malformed code for an eligible challenge |
+| `otp_expired` | Eligible matching-purpose/channel/account challenge has expired |
+| `otp_attempts_exceeded` | That eligible challenge exhausted its five attempts |
+| `otp_resend_cooldown` | Destination has a challenge within the resend window |
+| `rate_limited` | Durable request budget or HTTP limiter exhausted |
+| `identity_conflict` | After proof of control, identity cannot be attached; other-account data is not returned |
+| `provider_unavailable` | Requested customer authentication method disabled/unconfigured |
+| `authentication_invalid` | Intentionally generic unknown, consumed/replayed, wrong-purpose/channel/account or invalidated-session challenge; also unavailable account context |
+
+Expiry/attempt details are returned only after matching the unguessable challenge ID to the expected purpose, channel, account and session version. An unrelated challenge never exposes that state. Request cooldowns/budgets depend on challenge history, not whether an account exists. Existing Google validation errors retain their stable `invalid_google_credential`/`google_unavailable` codes. No error returns another account's identity, remaining code, OTP/hash, token, provider subject or security state.
 
 ## Google validation
 

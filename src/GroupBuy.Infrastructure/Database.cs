@@ -134,11 +134,12 @@ public sealed partial class MarketplaceDb(DbContextOptions<MarketplaceDb> option
         });
         ConfigurePhaseOne(b);
         ConfigureCustomerAuthentication(b);
+        ConfigureDataProtection(b);
         foreach (var entity in b.Model.GetEntityTypes()) foreach (var p in entity.GetProperties())
         {
             if (p.ClrType == typeof(decimal) || p.ClrType == typeof(decimal?))
             { p.SetPrecision(p.Name is "Latitude" or "Longitude" ? 10 : 18); p.SetScale(p.Name.Contains("Price") ? 2 : p.Name is "Latitude" or "Longitude" ? 7 : 3); }
-            if (p.ClrType == typeof(string) && p.GetMaxLength() is null && p.GetColumnType() != "jsonb") p.SetMaxLength(4000);
+            if (p.ClrType == typeof(string) && p.GetMaxLength() is null && p.GetColumnType() is not ("jsonb" or "text")) p.SetMaxLength(4000);
         }
         b.Entity<Category>().HasData(CategorySeed.All);
         b.Entity<IdentityRole<Guid>>().HasData(new[] { "Customer", "Seller", "Admin" }.Select((name, i) => new IdentityRole<Guid> { Id = Guid.Parse($"00000000-0000-0000-0000-{i + 1:000000000000}"), Name = name, NormalizedName = name.ToUpperInvariant(), ConcurrencyStamp = $"role-{name}" }));

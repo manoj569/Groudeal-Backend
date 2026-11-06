@@ -13,10 +13,11 @@ using Microsoft.IdentityModel.Tokens;
 using Serilog;
 
 if (args.Length == 1 && args[0] == "--healthcheck") {
-    try { using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) }; using var request = new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:8080/health/ready"); request.Headers.Host = Environment.GetEnvironmentVariable("HealthChecks__Host") ?? (Environment.GetEnvironmentVariable("AllowedHosts") ?? "localhost").Split(';')[0].Trim(); using var response = await client.SendAsync(request); Environment.ExitCode = response.IsSuccessStatusCode ? 0 : 1; }
+    try { using var client = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(3) }; var port = Environment.GetEnvironmentVariable("PORT") ?? "8080"; if (!int.TryParse(port, out var number) || number is < 1024 or > 65535) throw new InvalidOperationException("Invalid health port."); using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{number}/health/ready"); request.Headers.Host = Environment.GetEnvironmentVariable("HealthChecks__Host") ?? (Environment.GetEnvironmentVariable("AllowedHosts") ?? "localhost").Split(';')[0].Trim(); using var response = await client.SendAsync(request); Environment.ExitCode = response.IsSuccessStatusCode ? 0 : 1; }
     catch { Environment.ExitCode = 1; } return;
 }
 var builder = WebApplication.CreateBuilder(args);
+ProductionConfiguration.ConfigurePort(builder);
 if (args.Contains("--seed-demo") && !builder.Environment.IsDevelopment()) throw new InvalidOperationException("Demo seed is development-only.");
 builder.Host.UseSerilog((_, log) => log.MinimumLevel.Information().MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning).MinimumLevel.Override("Microsoft.EntityFrameworkCore", Serilog.Events.LogEventLevel.Fatal).MinimumLevel.Override("Microsoft.AspNetCore.DataProtection", Serilog.Events.LogEventLevel.Fatal).MinimumLevel.Override("Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerHandler", Serilog.Events.LogEventLevel.Fatal).WriteTo.Console(new Serilog.Formatting.Json.JsonFormatter(renderMessage: true)));
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 64 * 1024);
@@ -92,11 +93,12 @@ builder.Services.AddRateLimiter(o => {
     o.AddPolicy("mfa", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("pickup", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("checkout", c => RateLimitPartition.GetFixedWindowLimiter(c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-    o.OnRejected = async (c, ct) => { c.HttpContext.Response.StatusCode = 429; await Results.Problem(statusCode: 429, title: "Rate limit exceeded.").ExecuteAsync(c.HttpContext); };
+    o.OnRejected = async (c, ct) => { c.HttpContext.Response.StatusCode = 429; await Results.Problem(statusCode: 429, title: "Rate limit exceeded.", extensions: new Dictionary<string, object?> { ["code"] = "rate_limited" }).ExecuteAsync(c.HttpContext); };
 });
 var app = builder.Build();
 app.ValidateCustomerAuthentication();
 try {
+    DataProtectionSetup.ValidatePersistedKeyRing(app.Services, requireEncryption: !app.Environment.IsDevelopment());
     var protector = app.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("Groudeal.StartupProbe.v1");
     if (protector.Unprotect(protector.Protect("startup-probe")) != "startup-probe") throw new InvalidOperationException("Protection probe failed.");
 }

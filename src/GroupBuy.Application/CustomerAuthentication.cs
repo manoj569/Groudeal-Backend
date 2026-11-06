@@ -10,7 +10,10 @@ public record OtpVerification(Guid ChallengeId, string Code);
 public record GoogleCredential(string Credential);
 public record ProfileCompletion(string DisplayName);
 public record ConsentAcceptance(string TermsVersion, string PrivacyVersion);
-public record CustomerProfile(Guid Id, string DisplayName, bool ProfileCompleted, bool EmailVerified, bool PhoneVerified, bool ConsentRequired, string? TermsVersion, string? PrivacyVersion);
+public record ConnectedAuthenticationMethods(bool Google, bool Email, bool Mobile);
+public record CustomerConsentStatus(string? TermsAcceptedVersion, string? PrivacyAcceptedVersion, bool ConsentRequired);
+public record CustomerProfile(Guid Id, string DisplayName, bool ProfileCompleted, bool EmailVerified, bool PhoneVerified, bool ConsentRequired, string? TermsVersion, string? PrivacyVersion,
+    string? Email = null, string? Mobile = null, ConnectedAuthenticationMethods? ConnectedMethods = null, CustomerConsentStatus? Consent = null);
 public record CustomerLogin(TokenResponse Session, bool Authenticated, CustomerProfile User);
 public record ChallengeResponse(Guid ChallengeId, DateTimeOffset ExpiresAtUtc);
 public record GoogleIdentity(string Subject, string? Email, string? Name);

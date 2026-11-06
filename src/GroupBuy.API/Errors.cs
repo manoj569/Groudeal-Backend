@@ -15,6 +15,7 @@ public sealed class Errors(IProblemDetailsService problems, ILogger<Errors> logg
         context.Response.StatusCode = status;
         var problem = new ProblemDetails { Status = status, Title = status == 500 ? "An unexpected error occurred." : exception is BusinessException business ? business.Code : "Request could not be processed.", Detail = exception is BusinessException ? exception.Message : null, Instance = context.Request.Path };
         problem.Extensions["traceId"] = context.TraceIdentifier;
+        if (exception is BusinessException coded) problem.Extensions["code"] = coded.ErrorCode ?? coded.Code;
         if (exception is ValidationException v) problem.Extensions["errors"] = v.Errors.GroupBy(x => x.PropertyName).ToDictionary(x => x.Key, x => x.Select(e => e.ErrorMessage).ToArray());
         if (status == 500) logger.LogError("Request failed {ErrorType} {TraceId}; diagnostic chain: {ExceptionDiagnostics}", exception.GetType().Name, context.TraceIdentifier, SafeExceptionDiagnostics(exception));
         return await problems.TryWriteAsync(new ProblemDetailsContext { HttpContext = context, ProblemDetails = problem });

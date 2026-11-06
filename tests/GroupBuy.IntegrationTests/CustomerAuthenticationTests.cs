@@ -40,11 +40,11 @@ public sealed class CustomerAuthFactory(string connection) : Microsoft.AspNetCor
     private sealed class FakeGoogle : IGoogleCredentialValidator
     {
         public Task<GoogleIdentity> Validate(string credential, CancellationToken ct) =>
-            Task.FromResult(new GoogleIdentity(credential, credential + "@gmail.com", "Google Customer"));
+            Task.FromResult(new GoogleIdentity(credential, credential.StartsWith("no-email-", StringComparison.Ordinal) ? null : credential + "@gmail.com", "Google Customer"));
     }
 }
 
-public sealed class CustomerAuthenticationTests(DatabaseFixture fixture) : IClassFixture<DatabaseFixture>
+public sealed partial class CustomerAuthenticationTests(DatabaseFixture fixture) : IClassFixture<DatabaseFixture>
 {
     private static string Destination(string channel) => channel == "email" ? Guid.NewGuid().ToString("N") + "@example.invalid" : "+91" + System.Security.Cryptography.RandomNumberGenerator.GetInt32(100000000, 999999999).ToString() + "0";
     private static async Task<T> Read<T>(HttpResponseMessage response)

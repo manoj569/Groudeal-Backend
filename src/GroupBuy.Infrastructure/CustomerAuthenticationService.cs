@@ -17,12 +17,12 @@ public sealed class UnconfiguredOtpDelivery : IOtpDeliveryProvider
 public sealed class CustomerAuthenticationService(MarketplaceDb db, UserManager<IdentityAccount> users, IConfiguration config,
     TimeProvider clock, IOtpDeliveryProvider delivery, IGoogleCredentialValidator google)
 {
-    private static BusinessException Invalid() => new(401, "invalid_challenge", "Authentication challenge unavailable or invalid.");
-    private static BusinessException Conflict() => new(409, "account_conflict", "Identity unavailable. Use the existing account recovery process.");
+    private static BusinessException Invalid(string code = "authentication_invalid") => new(401, "invalid_challenge", "Authentication challenge unavailable or invalid.") { ErrorCode = code };
+    private static BusinessException Conflict() => new(409, "account_conflict", "Identity unavailable. Use the existing account recovery process.") { ErrorCode = "identity_conflict" };
     private void Enabled(string channel)
     {
         if (!config.GetValue($"Authentication:{(channel == "email" ? "EmailOtp" : "MobileOtp")}:Enabled", false) || !delivery.Supports(channel))
-            throw new BusinessException(503, "authentication_unavailable", "Authentication method is unavailable.");
+            throw new BusinessException(503, "authentication_unavailable", "Authentication method is unavailable.") { ErrorCode = "provider_unavailable" };
     }
     // Transaction-scoped cross-instance lock also serializes absent identities. Unique indexes
     // remain the final guard against legacy registration and writes outside this service.
@@ -48,11 +48,12 @@ public sealed class CustomerAuthenticationService(MarketplaceDb db, UserManager<
         var account = actor.HasValue ? await Customer(actor.Value, ct) : null;
         var now = clock.GetUtcNow();
         var history = db.CustomerChallenges.Where(x => x.Channel == channel && x.Destination == destination);
-        if (await history.AnyAsync(x => x.CreatedAtUtc > now.AddMinutes(-1), ct) ||
-            await history.CountAsync(x => x.CreatedAtUtc > now.AddHours(-1), ct) >= 5 ||
+        if (await history.AnyAsync(x => x.CreatedAtUtc > now.AddMinutes(-1), ct))
+            throw new BusinessException(429, "challenge_rate_limited", "Try again later.") { ErrorCode = "otp_resend_cooldown" };
+        if (await history.CountAsync(x => x.CreatedAtUtc > now.AddHours(-1), ct) >= 5 ||
             await history.CountAsync(x => x.CreatedAtUtc > now.AddDays(-1), ct) >= 20 ||
             (actor.HasValue && await db.CustomerChallenges.CountAsync(x => x.UserId == actor && x.CreatedAtUtc > now.AddHours(-1), ct) >= 10))
-            throw new BusinessException(429, "challenge_rate_limited", "Try again later.");
+            throw new BusinessException(429, "challenge_rate_limited", "Try again later.") { ErrorCode = "rate_limited" };
         await history.Where(x => x.ConsumedAtUtc == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.ConsumedAtUtc, now), ct);
         var c = new CustomerChallenge { Channel = channel, Destination = destination, Purpose = actor.HasValue ? "AccountLink" : "Login",
             UserId = actor, TokenVersion = account?.TokenVersion, CreatedAtUtc = now, ExpiresAtUtc = now.AddMinutes(5) };
@@ -70,17 +71,23 @@ public sealed class CustomerAuthenticationService(MarketplaceDb db, UserManager<
         var c = await db.CustomerChallenges.SingleOrDefaultAsync(x => x.Id == request.ChallengeId, ct);
         var now = clock.GetUtcNow();
         if (c is null || c.Channel != channel || c.UserId != actor || c.Purpose != (actor.HasValue ? "AccountLink" : "Login") ||
-            c.ConsumedAtUtc != null || c.ExpiresAtUtc <= now || c.FailedAttempts >= 5 || (account != null && c.TokenVersion != account.TokenVersion))
+            c.ConsumedAtUtc != null || (account != null && c.TokenVersion != account.TokenVersion))
         {
             db.AuditLogs.Add(new AuditLog { Action = "LoginFailed", EntityType = "AuthenticationChallenge", EntityId = request.ChallengeId });
             await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); throw Invalid();
+        }
+        if (c.FailedAttempts >= 5 || c.ExpiresAtUtc <= now)
+        {
+            db.AuditLogs.Add(new AuditLog { Action = "LoginFailed", EntityType = "AuthenticationChallenge", EntityId = request.ChallengeId });
+            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+            throw Invalid(c.FailedAttempts >= 5 ? "otp_attempts_exceeded" : "otp_expired");
         }
         if (request.Code is not { Length: 6 } || !request.Code.All(char.IsAsciiDigit) ||
             !CryptographicOperations.FixedTimeEquals(Convert.FromHexString(c.CodeHash), Convert.FromHexString(Hash(c, request.Code))))
         {
             c.FailedAttempts++;
             db.AuditLogs.Add(new AuditLog { Action = c.FailedAttempts == 5 ? "AuthenticationChallengeLocked" : "LoginFailed", EntityType = "AuthenticationChallenge", EntityId = c.Id });
-            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); throw Invalid();
+            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); throw Invalid(c.FailedAttempts == 5 ? "otp_attempts_exceeded" : "otp_invalid");
         }
         c.ConsumedAtUtc = now;
         var owner = channel == "email" ? await users.FindByEmailAsync(c.Destination) : await db.Users.SingleOrDefaultAsync(x => x.PhoneNumber == c.Destination, ct);
@@ -124,7 +131,7 @@ public sealed class CustomerAuthenticationService(MarketplaceDb db, UserManager<
     }
     public async Task<object> Google(GoogleCredential request, Guid? actor, CancellationToken ct)
     {
-        if (!config.GetValue("Authentication:Google:Enabled", false)) throw new BusinessException(503, "authentication_unavailable", "Authentication method is unavailable.");
+        if (!config.GetValue("Authentication:Google:Enabled", false)) throw new BusinessException(503, "authentication_unavailable", "Authentication method is unavailable.") { ErrorCode = "provider_unavailable" };
         GoogleIdentity identity;
         try { identity = await google.Validate(request.Credential, ct); }
         catch (BusinessException ex) when (ex.StatusCode == 401)
@@ -165,8 +172,17 @@ public sealed class CustomerAuthenticationService(MarketplaceDb db, UserManager<
         var a = await db.Users.AsNoTracking().SingleAsync(x => x.Id == id, ct);
         var terms = config["Authentication:Consent:TermsVersion"]; var privacy = config["Authentication:Consent:PrivacyVersion"];
         var consent = await db.UserConsents.Where(x => x.UserId == id).ToListAsync(ct);
-        return new(id, p.DisplayName, !string.IsNullOrWhiteSpace(p.DisplayName), a.EmailConfirmed, a.PhoneNumberConfirmed,
-            terms == null || privacy == null || !consent.Any(x => x.DocumentType == "TermsOfService" && x.DocumentVersion == terms) || !consent.Any(x => x.DocumentType == "PrivacyPolicy" && x.DocumentVersion == privacy), terms, privacy);
+        var termsAccepted = consent.Where(x => x.DocumentType == "TermsOfService").OrderByDescending(x => x.AcceptedAtUtc).ThenByDescending(x => x.Id).FirstOrDefault()?.DocumentVersion;
+        var privacyAccepted = consent.Where(x => x.DocumentType == "PrivacyPolicy").OrderByDescending(x => x.AcceptedAtUtc).ThenByDescending(x => x.Id).FirstOrDefault()?.DocumentVersion;
+        var required = string.IsNullOrWhiteSpace(terms) || string.IsNullOrWhiteSpace(privacy) ||
+            !consent.Any(x => x.DocumentType == "TermsOfService" && x.DocumentVersion == terms) || !consent.Any(x => x.DocumentType == "PrivacyPolicy" && x.DocumentVersion == privacy);
+        var email = string.IsNullOrWhiteSpace(a.Email) ? null : a.NormalizedEmail ?? a.Email;
+        var mobile = string.IsNullOrWhiteSpace(a.PhoneNumber) ? null : a.PhoneNumber;
+        var emailVerified = a.EmailConfirmed && email != null;
+        var phoneVerified = a.PhoneNumberConfirmed && mobile != null;
+        var googleConnected = await db.UserLogins.AsNoTracking().AnyAsync(x => x.UserId == id && x.LoginProvider == "Google", ct);
+        return new(id, p.DisplayName, !string.IsNullOrWhiteSpace(p.DisplayName), emailVerified, phoneVerified, required, terms, privacy,
+            email, mobile, new(googleConnected, emailVerified, phoneVerified), new(termsAccepted, privacyAccepted, required));
     }
     public async Task<CustomerProfile> Profile(Guid id, ProfileCompletion request, CancellationToken ct)
     {

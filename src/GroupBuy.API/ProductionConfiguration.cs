@@ -1,7 +1,5 @@
 using System.Net;
-using System.Security.Cryptography.X509Certificates;
 using GroupBuy.Infrastructure;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
 
@@ -9,6 +7,14 @@ namespace GroupBuy.API;
 
 public static class ProductionConfiguration
 {
+    public static void ConfigurePort(WebApplicationBuilder builder)
+    {
+        // PORT comes from the deployment environment, never from request headers.
+        if (builder.Configuration["PORT"] is not string value) return;
+        if (!int.TryParse(value, out var port) || port is < 1024 or > 65535)
+            throw new InvalidOperationException("PORT must be an unprivileged TCP port between 1024 and 65535.");
+        builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+    }
     public static void Configure(WebApplicationBuilder builder)
     {
         if (!builder.Environment.IsDevelopment()) builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
@@ -23,30 +29,20 @@ public static class ProductionConfiguration
                 o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
             }
         });
-        var dataProtection = builder.Services.AddDataProtection().SetApplicationName("Groudeal.Identity.v1");
-        var keyPath = c["DataProtection:KeyPath"];
+        DataProtectionSetup.Configure(builder.Services, c, builder.Environment);
         if (production) {
+            if (string.Equals(c["ASPNETCORE_FORWARDEDHEADERS_ENABLED"], "true", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Use explicit Proxy__KnownProxies; unrestricted forwarded-header auto-configuration is forbidden.");
             if (!string.IsNullOrEmpty(c["Demo:Password"]) || !string.IsNullOrEmpty(c["Demo:AdminAuthenticatorKey"])) throw new InvalidOperationException("Development fixture configuration must be absent in Production.");
-            if (string.IsNullOrWhiteSpace(keyPath) || !Path.IsPathFullyQualified(keyPath) || !Directory.Exists(keyPath)) throw new InvalidOperationException("Production requires an existing persistent DataProtection__KeyPath.");
-            var certificatePath = c["DataProtection:CertificatePath"];
-            if (string.IsNullOrWhiteSpace(certificatePath) || !File.Exists(certificatePath)) throw new InvalidOperationException("Production requires a Data Protection encryption certificate.");
-            var cert = X509CertificateLoader.LoadPkcs12FromFile(certificatePath, c["DataProtection:CertificatePassword"], X509KeyStorageFlags.EphemeralKeySet);
-            if (!cert.HasPrivateKey || cert.NotAfter.ToUniversalTime() <= DateTime.UtcNow || cert.NotBefore.ToUniversalTime() > DateTime.UtcNow) throw new InvalidOperationException("The current Data Protection certificate must be valid and include its private key.");
-            dataProtection.ProtectKeysWithCertificate(cert);
-            var decrypt = new List<X509Certificate2> { cert };
-            foreach (var old in c.GetSection("DataProtection:PreviousCertificates").GetChildren()) {
-                var previous = X509CertificateLoader.LoadPkcs12FromFile(old["Path"]!, old["Password"], X509KeyStorageFlags.EphemeralKeySet);
-                if (!previous.HasPrivateKey) throw new InvalidOperationException("Previous key-decryption certificates need private keys."); decrypt.Add(previous);
-            }
-            dataProtection.UnprotectKeysWithAnyCertificate(decrypt.ToArray());
             var connection = new NpgsqlConnectionStringBuilder(c.GetConnectionString("Database"));
             if (connection.SslMode != SslMode.VerifyFull) throw new InvalidOperationException("Production PostgreSQL must use SslMode=VerifyFull.");
             if (connection.IncludeErrorDetail) throw new InvalidOperationException("Production database error detail must remain disabled.");
             if (!connection.Pooling || connection.MaxPoolSize is < 1 or > 200 || connection.Timeout is < 1 or > 30 || connection.CommandTimeout is < 1 or > 60) throw new InvalidOperationException("Production database pooling/timeouts are outside supported bounds.");
             if (string.IsNullOrWhiteSpace(c["AllowedHosts"]) || c["AllowedHosts"]!.Contains('*')) throw new InvalidOperationException("Production requires explicit AllowedHosts.");
+            if (c["AllowedHosts"]!.Split(';').Any(h => string.IsNullOrWhiteSpace(h) || Uri.CheckHostName(h.Trim()) == UriHostNameType.Unknown))
+                throw new InvalidOperationException("AllowedHosts must contain explicit hostnames separated by semicolons, without schemes or ports.");
             if (c.GetValue("AdminProvisioning:Enabled", false) && c["admin-operation"] is null) throw new InvalidOperationException("Provisioning permission must not remain enabled on the API host.");
         }
-        dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keyPath ?? Path.Combine(builder.Environment.ContentRootPath, ".local", "data-protection")));
         var attempts = c.GetValue("Operations:WorkerMaxAttempts", 10);
         if (attempts is < 1 or > 100) throw new InvalidOperationException("WorkerMaxAttempts must be between 1 and 100.");
     }

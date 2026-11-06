@@ -36,5 +36,9 @@ public static class CustomerAuthenticationEndpoints
         foreach (var key in new[] { "TermsVersion", "PrivacyVersion" })
             if (config[$"Authentication:Consent:{key}"] is string version && (string.IsNullOrWhiteSpace(version) || version.Length > 100))
                 throw new InvalidOperationException("Consent versions must contain 1–100 characters.");
+        if (!app.Environment.IsDevelopment() && (config.GetValue("Pilot:Enabled", false) || config.GetValue("Authentication:Google:Enabled", false) ||
+            config.GetValue("Authentication:EmailOtp:Enabled", false) || config.GetValue("Authentication:MobileOtp:Enabled", false)) &&
+            (string.IsNullOrWhiteSpace(config["Authentication:Consent:TermsVersion"]) || string.IsNullOrWhiteSpace(config["Authentication:Consent:PrivacyVersion"])))
+            throw new InvalidOperationException("Production customer authentication/pilot activation requires approved Terms and Privacy version identifiers.");
     }
 }
