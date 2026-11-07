@@ -29,6 +29,7 @@ public sealed partial class MarketplaceDb(DbContextOptions<MarketplaceDb> option
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
+        ConfigureDiscovery(b);
         b.Entity<IdentityAccount>().ToTable("identity_accounts");
         b.Entity<IdentityRole<Guid>>().ToTable("identity_roles");
         b.Entity<IdentityUserRole<Guid>>().ToTable("identity_user_roles");

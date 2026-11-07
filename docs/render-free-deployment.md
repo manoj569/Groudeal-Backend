@@ -2,6 +2,8 @@
 
 Scope: backend code and local verification. No actual Neon connection, production migration, Render deployment, live provider activation, legal approval or commercial approval is performed by this task. Render Free is a controlled MVP/integration host, not an availability guarantee for payment deadlines or continuous workers.
 
+Module 2 adds the forward-only `20261107060508_HomeDiscoveryDemands` migration after the Data Protection migration described below. Before deploying that API revision, apply the reviewed migration with the separate migrator and review/apply the updated runtime grant script. Its discovery configuration, API contracts and rollout prerequisites are documented in [Module 2 discovery](module2-discovery.md). This does not change the Render ingress contract or activate Pilot, payments or authentication providers.
+
 ## Conditional ingress resolution — verify before customer traffic
 
 The API retains explicit trusted-proxy IPs, one symmetric `X-Forwarded-For`/`X-Forwarded-Proto` hop, HTTPS redirection, explicit hosts and explicit CORS. Forwarded headers from other peers are ignored. Unrestricted `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` is rejected in Production.

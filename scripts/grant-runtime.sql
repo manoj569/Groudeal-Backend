@@ -40,6 +40,7 @@ BEGIN
  EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE %s TO %I', pg_get_serial_sequence('public.data_protection_keys', 'Id'), runtime_role);
  EXECUTE format('GRANT INSERT, UPDATE ON identity_accounts, identity_user_tokens, sellers, seller_locations, products, product_variants, group_buy_campaigns, group_buy_reservations, inventory, pickup_records, internal_notifications, admin_mfa_challenges, admin_mfa_accepted_codes TO %I', runtime_role);
  EXECUTE format('GRANT INSERT, UPDATE ON customer_interests, campaign_price_tiers, payment_orders, payment_webhooks, payment_refunds, order_fulfillments, sandbox_payment_receipts, sandbox_refund_receipts, pilot_jobs TO %I', runtime_role);
+ EXECUTE format('GRANT INSERT, UPDATE ON discovery_demands TO %I', runtime_role);
  -- Draft-only tier replacement is the sole new delete operation; financial/audit rows remain durable.
  EXECUTE format('GRANT DELETE ON campaign_price_tiers TO %I', runtime_role);
  EXECUTE format('GRANT INSERT, DELETE ON identity_user_roles TO %I', runtime_role);

@@ -21,7 +21,12 @@ public partial class BackendTests
             await using var db = new MarketplaceDb(new DbContextOptionsBuilder<MarketplaceDb>().UseNpgsql(connection).Options);
             var migrator = db.GetService<IMigrator>(); await migrator.MigrateAsync("20261101131443_Sprint2Operations");
             var proof = new AuditLog { EntityId = Guid.NewGuid(), EntityType = "MigrationFixture", Action = "LegacyAuditProof" }; db.AuditLogs.Add(proof); await db.SaveChangesAsync();
-            await migrator.MigrateAsync(); Assert.Equal(db.Database.GetMigrations(), await db.Database.GetAppliedMigrationsAsync());
+            // Exercise the MFA migration's own empty-schema rollback, not unrelated later
+            // modules whose customer data migrations deliberately prohibit downgrade.
+            const string mfaMigration = "20261102012900_AdminMfaSecurity";
+            await migrator.MigrateAsync(mfaMigration);
+            var throughMfa = db.Database.GetMigrations().TakeWhile(m => string.CompareOrdinal(m, mfaMigration) <= 0);
+            Assert.Equal(throughMfa, await db.Database.GetAppliedMigrationsAsync());
             Assert.True(await db.AuditLogs.AnyAsync(a => a.Id == proof.Id)); Assert.False(await db.MfaChallenges.AnyAsync());
             await migrator.MigrateAsync("20261101131443_Sprint2Operations"); Assert.True(await db.AuditLogs.AnyAsync(a => a.Id == proof.Id));
             await migrator.MigrateAsync(); Assert.Equal(db.Database.GetMigrations(), await db.Database.GetAppliedMigrationsAsync()); Assert.True(await db.AuditLogs.AnyAsync(a => a.Id == proof.Id));

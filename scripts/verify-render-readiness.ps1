@@ -40,13 +40,16 @@ try {
  $unit = 'tests/GroupBuy.UnitTests/GroupBuy.UnitTests.csproj'
  $integration = 'tests/GroupBuy.IntegrationTests/GroupBuy.IntegrationTests.csproj'
  Invoke-Tests '03-new-unit' $unit 'FullyQualifiedName~DataProtectionConfigurationTests' 13
- Invoke-Tests '04-all-unit' $unit '' 84
+ Invoke-Tests '03a-discovery-unit' $unit 'FullyQualifiedName~DiscoveryInputTests' 25
+ Invoke-Tests '04-all-unit' $unit '' 109
  Invoke-Tests '04a-render-ingress' $integration 'FullyQualifiedName~RenderFreeIngressTests' 67
+ Invoke-Tests '04b-discovery' $integration 'FullyQualifiedName~DiscoveryTests' 45
  $new = 'FullyQualifiedName~DataProtectionPersistenceTests|FullyQualifiedName~RenderProductionConfigurationTests|FullyQualifiedName~Me_contract_returns|FullyQualifiedName~Me_immediately|FullyQualifiedName~Google_only_me|FullyQualifiedName~Gmail_address|FullyQualifiedName~Otp_error_codes'
  Invoke-Tests '05-new-postgres' $integration $new 29
  Invoke-Tests '06-authentication' $integration 'FullyQualifiedName~CustomerAuthenticationTests|FullyQualifiedName~Authentication|FullyQualifiedName~Jwt_|FullyQualifiedName~Removed_roles|FullyQualifiedName~credential_budget' 24
  Invoke-Tests '07-admin-security' $integration 'FullyQualifiedName~MFA|FullyQualifiedName~Mfa|FullyQualifiedName~Admin_|FullyQualifiedName~Recovery_codes|FullyQualifiedName~Runtime_|FullyQualifiedName~Production_requires|FullyQualifiedName~Payment|FullyQualifiedName~ExceptionRedaction' 10
- Invoke-Tests '08-all-postgres' $integration '' 239
+ Invoke-Tests '07a-seller-cors' $integration 'FullyQualifiedName~Cross_seller_product_and_pickup_access_is_denied|FullyQualifiedName~Seller_profile|FullyQualifiedName~CORS|FullyQualifiedName~Cors' 4
+ Invoke-Tests '08-all-postgres' $integration '' 284
  Invoke-Tests '09-empty-migration' $integration 'FullyQualifiedName~Migration_from_empty_isolated_Postgres' 1
  Invoke-Tests '10-upgrade-migration' $integration 'FullyQualifiedName~Migration_from_previous_schema' 1
  Invoke-Check '11-model' @('ef','migrations','has-pending-model-changes','--project','src/GroupBuy.Infrastructure','--no-build')

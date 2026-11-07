@@ -358,11 +358,14 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.Property<Guid>("CustomerId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("DemandId")
+                        .HasColumnType("uuid");
+
                     b.Property<decimal>("DesiredQuantity")
                         .HasPrecision(18, 3)
                         .HasColumnType("numeric(18,3)");
 
-                    b.Property<Guid>("ProductId")
+                    b.Property<Guid?>("ProductId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("ServiceArea")
@@ -375,7 +378,13 @@ namespace GroupBuy.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DemandId");
+
                     b.HasIndex("ProductId");
+
+                    b.HasIndex("CustomerId", "DemandId")
+                        .IsUnique()
+                        .HasFilter("\"DemandId\" IS NOT NULL");
 
                     b.HasIndex("CustomerId", "ProductId", "ServiceArea")
                         .IsUnique();
@@ -385,7 +394,52 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.ToTable("customer_interests", null, t =>
                         {
                             t.HasCheckConstraint("ck_interest_quantity", "\"DesiredQuantity\" > 0 AND \"DesiredQuantity\" <= 1000000");
+
+                            t.HasCheckConstraint("ck_interest_target", "(\"ProductId\" IS NOT NULL) <> (\"DemandId\" IS NOT NULL)");
                         });
+                });
+
+            modelBuilder.Entity("GroupBuy.Domain.DiscoveryDemand", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CategoryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsOpen")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("NormalizedTitle")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ServiceArea")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("NormalizedTitle", "ServiceArea")
+                        .IsUnique();
+
+                    b.ToTable("discovery_demands", (string)null);
                 });
 
             modelBuilder.Entity("GroupBuy.Domain.GroupBuyCampaign", b =>
@@ -1879,11 +1933,23 @@ namespace GroupBuy.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("GroupBuy.Domain.DiscoveryDemand", null)
+                        .WithMany()
+                        .HasForeignKey("DemandId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("GroupBuy.Domain.Product", null)
                         .WithMany()
                         .HasForeignKey("ProductId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("GroupBuy.Domain.DiscoveryDemand", b =>
+                {
+                    b.HasOne("GroupBuy.Domain.Category", null)
+                        .WithMany()
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("GroupBuy.Domain.GroupBuyCampaign", b =>

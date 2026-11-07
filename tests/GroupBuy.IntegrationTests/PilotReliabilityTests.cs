@@ -39,11 +39,17 @@ public partial class BackendTests
             var migrator=db.GetService<IMigrator>();await migrator.MigrateAsync("20261104233113_TrackPaidPickupPolicy");
             var eventId=Guid.NewGuid().ToString("N");var id=Guid.NewGuid();
             await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO payment_webhooks (\"Id\",\"Provider\",\"EventId\",\"PayloadHash\",\"ProviderOrderId\",\"ReceivedAtUtc\",\"Attempts\",\"ErrorCode\") VALUES ({id},'Sandbox',{eventId},{new string('A',64)},'sandbox_preserved',{DateTimeOffset.UtcNow},10,'reconciliation_required')");
-            await migrator.MigrateAsync();var job=await db.PilotJobs.SingleAsync(j=>j.ItemId==id);
+            // Test this migration's PostgreSQL rollback guard before unrelated later
+            // forward-only modules, then separately verify the full latest upgrade.
+            await migrator.MigrateAsync("20261105101152_PersistPilotWorkerRetries");var job=await db.PilotJobs.SingleAsync(j=>j.ItemId==id);
             Assert.Equal(PilotJobState.Exhausted,job.State);Assert.Equal(10,job.Attempts);Assert.Equal(10,job.CycleAttempts);Assert.Null(job.LastAttemptAtUtc);
             var webhook=await db.PaymentWebhooks.SingleAsync(w=>w.Id==id);Assert.Equal(eventId,webhook.EventId);Assert.Equal("sandbox_preserved",webhook.ProviderOrderId);Assert.Null(webhook.ProcessedAtUtc);
             var error=await Assert.ThrowsAsync<PostgresException>(()=>migrator.MigrateAsync("20261104233113_TrackPaidPickupPolicy"));Assert.Equal("P0001",error.SqlState);
             Assert.Equal(1,await db.PilotJobs.CountAsync());
+            await migrator.MigrateAsync();
+            Assert.Equal(db.Database.GetMigrations(),await db.Database.GetAppliedMigrationsAsync());
+            Assert.Equal(PilotJobState.Exhausted,(await db.PilotJobs.AsNoTracking().SingleAsync(j=>j.ItemId==id)).State);
+            Assert.Equal(eventId,await db.PaymentWebhooks.Where(w=>w.Id==id).Select(w=>w.EventId).SingleAsync());
         }
         finally{await using var drop=new NpgsqlCommand($"DROP DATABASE IF EXISTS {name} WITH (FORCE)",admin);await drop.ExecuteNonQueryAsync();}
     }

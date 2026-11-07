@@ -34,7 +34,8 @@ public sealed partial class GroupBuyCampaign
 public sealed class CustomerInterest : TrackedEntity
 {
     public Guid CustomerId { get; set; }
-    public Guid ProductId { get; set; }
+    public Guid? ProductId { get; set; }
+    public Guid? DemandId { get; set; }
     public string ServiceArea { get; set; } = "";
     public decimal DesiredQuantity { get; set; }
     public bool Active { get; set; } = true;

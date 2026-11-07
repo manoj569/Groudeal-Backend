@@ -28,10 +28,10 @@ public sealed partial class Marketplace : IPhaseOne
         if(!withdraw)interest.DesiredQuantity=request.DesiredQuantity;interest.Active=!withdraw;interest.UpdatedAt=clock.GetUtcNow();
         await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await InterestDto(interest,ct);
     }
-    private async Task<InterestResponse> InterestDto(CustomerInterest i,CancellationToken ct)=>new(i.Id,i.ProductId,await db.Products.Where(p=>p.Id==i.ProductId).Select(p=>p.Name).SingleAsync(ct),i.ServiceArea,i.DesiredQuantity,i.Active);
+    private async Task<InterestResponse> InterestDto(CustomerInterest i,CancellationToken ct)=>new(i.Id,i.ProductId!.Value,await db.Products.Where(p=>p.Id==i.ProductId).Select(p=>p.Name).SingleAsync(ct),i.ServiceArea,i.DesiredQuantity,i.Active);
     public async Task<PageResponse<InterestResponse>> Interests(Actor actor,PageRequest page,CancellationToken ct)
     {
-        Pilot();Page(page);var q=db.Interests.AsNoTracking().Where(i=>i.CustomerId==actor.UserId);var rows=await q.OrderByDescending(i=>i.UpdatedAt).ThenBy(i=>i.Id).Skip(page.Offset).Take(page.PageSize).ToListAsync(ct);
+        Pilot();Page(page);var q=db.Interests.AsNoTracking().Where(i=>i.CustomerId==actor.UserId && i.ProductId!=null);var rows=await q.OrderByDescending(i=>i.UpdatedAt).ThenBy(i=>i.Id).Skip(page.Offset).Take(page.PageSize).ToListAsync(ct);
         var result=new List<InterestResponse>();foreach(var i in rows)result.Add(await InterestDto(i,ct));return new(result,page.Page,page.PageSize,await q.CountAsync(ct));
     }
     public async Task<PageResponse<DemandResponse>> Demand(Actor actor,bool seller,PageRequest page,CancellationToken ct)
@@ -39,7 +39,7 @@ public sealed partial class Marketplace : IPhaseOne
         Pilot();Page(page);if(seller)Require(Eligible(await OwnedSeller(actor,ct)),"Approved seller required.",403);else Admin(actor);
         var recent=clock.GetUtcNow().AddDays(-7);var q=from i in db.Interests.AsNoTracking() join p in PublicProducts on i.ProductId equals p.Id where i.Active group i by new{i.ProductId,p.Name,i.ServiceArea} into g select new {g.Key.ProductId,g.Key.Name,g.Key.ServiceArea,Customers=g.Count(),Quantity=g.Sum(i=>i.DesiredQuantity),RecentCustomers=g.Count(i=>i.UpdatedAt>=recent)};
         var rows=await q.OrderByDescending(x=>x.Quantity).ThenBy(x=>x.ProductId).ThenBy(x=>x.ServiceArea).Skip(page.Offset).Take(page.PageSize).ToListAsync(ct);
-        return new(rows.Select(x=>new DemandResponse(x.ProductId,x.Name,x.ServiceArea,x.Customers,x.Quantity,x.RecentCustomers)).ToList(),page.Page,page.PageSize,await q.CountAsync(ct));
+        return new(rows.Select(x=>new DemandResponse(x.ProductId!.Value,x.Name,x.ServiceArea,x.Customers,x.Quantity,x.RecentCustomers)).ToList(),page.Page,page.PageSize,await q.CountAsync(ct));
     }
     private async Task<TierCampaignResponse> TierDto(GroupBuyCampaign c,CancellationToken ct)
     {
