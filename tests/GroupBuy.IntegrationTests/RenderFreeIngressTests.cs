@@ -25,20 +25,20 @@ public sealed class RenderFreeIngressTests
         public bool IsEnabled(LogLevel level) => true;
         public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            Assert.Equal(LogLevel.Information, level);
-            Assert.Null(exception);
             Events.Add(Assert.IsAssignableFrom<IEnumerable<KeyValuePair<string, object?>>>(state).ToDictionary(p => p.Key, p => p.Value));
         }
     }
 
     [Theory]
     [InlineData(true, "198.51.100.20", "/api/probe", true)]
-    [InlineData(true, "::ffff:127.0.0.1", "/api/probe", false)]
+    [InlineData(true, "::ffff:127.0.0.1", "/api/probe", true)]
+    [InlineData(true, "127.0.0.1", "/api/probe", true)]
+    [InlineData(true, "::1", "/api/probe", true)]
     [InlineData(true, null, "/api/probe", false)]
     [InlineData(true, "198.51.100.20", "/health/live", false)]
     [InlineData(true, "198.51.100.20", "/health/ready", false)]
     [InlineData(false, "198.51.100.20", "/api/probe", false)]
-    public async Task Temporary_diagnostics_log_only_allowlisted_scalars_and_actual_outcome(bool enabled, string? address, string path, bool reconstructed)
+    public async Task Adapter_emits_no_per_request_diagnostics_and_preserves_peer(bool enabled, string? address, string path, bool reconstructed)
     {
         var logger = new DiagnosticLogger();
         using var services = new ServiceCollection().AddSingleton<ILogger<RenderFreeIngressAdapter>>(logger).BuildServiceProvider();
@@ -56,26 +56,7 @@ public sealed class RenderFreeIngressTests
         Assert.True(nextCalled);
         Assert.Equal(reconstructed ? "https" : "http", context.Request.Scheme);
         Assert.Equal(originalPeer, context.Connection.RemoteIpAddress);
-        if (!enabled) { Assert.Empty(logger.Events); return; }
-        Assert.Equal(2, logger.Events.Count);
-        var inputs = logger.Events[0];
-        string[] expected = ["Scheme", "Host", "HostPort", "LocalPort", "RemoteIpIsNull", "RemoteIpIsLoopback", "RemoteIpIsIPv4MappedIPv6",
-            "ConfiguredPort", "ExternalHostname", "ExternalHostnameConfigured", "IsLiveHealthPath", "IsReadyHealthPath", "SchemeIsHttp",
-            "RemoteIpPresent", "RemoteIpNotLoopback", "LocalPortMatches", "HostMatches", "HostPortAllowed", "{OriginalFormat}"];
-        Assert.Equal(expected.Order(), inputs.Keys.Order());
-        Assert.Equal("http", inputs["Scheme"]); Assert.Equal(Host, inputs["Host"]); Assert.Null(inputs["HostPort"]);
-        Assert.Equal(10000, inputs["LocalPort"]); Assert.Equal(10000, inputs["ConfiguredPort"]); Assert.Equal(Host, inputs["ExternalHostname"]);
-        Assert.Equal(address is null, inputs["RemoteIpIsNull"]);
-        Assert.Equal(address?.StartsWith("::ffff:") == true, inputs["RemoteIpIsIPv4MappedIPv6"]);
-        Assert.Equal(address == "::ffff:127.0.0.1", inputs["RemoteIpIsLoopback"]);
-        Assert.Equal(new[] { "SchemeReconstructed", "{OriginalFormat}" }.Order(), logger.Events[1].Keys.Order());
-        Assert.Equal(reconstructed, logger.Events[1]["SchemeReconstructed"]);
-        foreach (var value in logger.Events.SelectMany(e => e.Values))
-        {
-            Assert.True(value is null or string or int or bool);
-            Assert.DoesNotContain(canary, value?.ToString() ?? "");
-            if (address is not null) Assert.DoesNotContain(address, value?.ToString() ?? "");
-        }
+        Assert.Empty(logger.Events);
     }
     private static WebApplicationBuilder Builder(bool enabled = true, Dictionary<string, string?>? overrides = null, string environment = "Production")
     {
@@ -93,9 +74,13 @@ public sealed class RenderFreeIngressTests
         return b;
     }
 
-    private static async Task<WebApplication> Start(bool enabled = true, string peer = "198.51.100.20", int port = 10000)
+    private static async Task<WebApplication> Start(bool enabled = true, string peer = "127.0.0.1", int port = 10000, string hostname = Host)
     {
-        var b = Builder(enabled);
+        var b = Builder(enabled, new()
+        {
+            ["Hosting:RenderFreeIngress:ExternalHostname"] = hostname, ["AllowedHosts"] = hostname,
+            ["RENDER_EXTERNAL_HOSTNAME"] = hostname, ["RENDER_EXTERNAL_URL"] = $"https://{hostname}"
+        });
         b.WebHost.UseTestServer();
         b.Services.AddSingleton(RenderFreeIngressAdapter.Validate(b.Configuration, b.Environment));
         b.Services.Configure<ForwardedHeadersOptions>(o => { o.ForwardLimit = 1; o.RequireHeaderSymmetry = true; });
@@ -134,13 +119,17 @@ public sealed class RenderFreeIngressTests
     }
 
     [Theory]
-    [InlineData("https")]
-    [InlineData("http")]
-    [InlineData("https, http")]
-    [InlineData("invalid")]
-    public async Task Render_edge_normalizes_scheme_without_trusting_headers_or_changing_peer(string suppliedProto)
+    [InlineData("https", "127.0.0.1")]
+    [InlineData("http", "127.0.0.1")]
+    [InlineData("https, http", "127.0.0.1")]
+    [InlineData("invalid", "127.0.0.1")]
+    [InlineData("https", "198.51.100.20")]
+    [InlineData("http", "198.51.100.20")]
+    [InlineData("https, http", "198.51.100.20")]
+    [InlineData("invalid", "198.51.100.20")]
+    public async Task Render_edge_normalizes_scheme_without_trusting_headers_or_changing_peer(string suppliedProto, string peer)
     {
-        await using var app = await Start(); using var client = app.GetTestClient();
+        await using var app = await Start(peer: peer); using var client = app.GetTestClient();
         using var r = Request();
         r.Headers.Add("X-Forwarded-Proto", suppliedProto);
         r.Headers.Add("X-Forwarded-For", "203.0.113.17");
@@ -150,10 +139,29 @@ public sealed class RenderFreeIngressTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode); Assert.Null(response.Headers.Location);
         var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("https", result.GetProperty("scheme").GetString());
-        Assert.Equal("198.51.100.20", result.GetProperty("peer").GetString());
+        Assert.Equal(peer, result.GetProperty("peer").GetString());
         Assert.Equal(Host, result.GetProperty("host").GetString());
         Assert.Equal(Origin, Assert.Single(response.Headers.GetValues("Access-Control-Allow-Origin")));
         Assert.True(response.Headers.Contains("Strict-Transport-Security"));
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    [InlineData("::ffff:127.0.0.1")]
+    public async Task Observed_Render_HTTP_loopback_edge_on_PORT_10000_is_external_HTTPS(string peer)
+    {
+        const string productionHost = "groudeal-backend.onrender.com";
+        await using var app = await Start(peer: peer, hostname: productionHost); using var client = app.GetTestClient();
+        // No forwarding headers: only validated deployment identity and the host/listener contract.
+        using var request = Request(host: productionHost); using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode); Assert.Null(response.Headers.Location);
+        var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("https", result.GetProperty("scheme").GetString());
+        Assert.Equal(peer, result.GetProperty("peer").GetString());
+        Assert.Equal(productionHost, result.GetProperty("host").GetString());
+        Assert.True(response.Headers.Contains("Strict-Transport-Security"));
+        Assert.Equal(Origin, Assert.Single(response.Headers.GetValues("Access-Control-Allow-Origin")));
     }
 
     [Fact]
@@ -186,9 +194,11 @@ public sealed class RenderFreeIngressTests
 
     [Theory]
     [InlineData(false, "198.51.100.20", 10000, Host)]
-    [InlineData(true, "127.0.0.1", 10000, Host)]
-    [InlineData(true, "::ffff:127.0.0.1", 10000, Host)]
-    [InlineData(true, "::1", 10000, Host)]
+    [InlineData(false, "127.0.0.1", 10000, Host)]
+    [InlineData(false, "::ffff:127.0.0.1", 10000, Host)]
+    [InlineData(false, "::1", 10000, Host)]
+    [InlineData(true, "127.0.0.1", 10001, Host)]
+    [InlineData(true, "127.0.0.1", 10000, Host + ":10000")]
     [InlineData(true, "198.51.100.20", 10001, Host)]
     [InlineData(true, "198.51.100.20", 10000, Host + ":10000")]
     public async Task Ineligible_HTTP_cannot_use_spoofed_forwarding_to_bypass_redirect(bool enabled, string peer, int port, string host)
@@ -201,20 +211,25 @@ public sealed class RenderFreeIngressTests
         Assert.Equal($"https://{Host}/api/probe", response.Headers.Location!.AbsoluteUri);
     }
 
-    [Fact]
-    public async Task Arbitrary_host_is_rejected_and_cannot_activate_adapter()
+    [Theory]
+    [InlineData("attacker.invalid")]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    public async Task Loopback_with_wrong_host_is_rejected_and_cannot_activate_adapter(string host)
     {
         await using var app = await Start(); using var client = app.GetTestClient();
-        using var r = Request(host: "attacker.invalid"); using var response = await client.SendAsync(r);
+        using var r = Request(host: host); using var response = await client.SendAsync(r);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Theory]
-    [InlineData("/health/live")]
-    [InlineData("/health/ready")]
-    public async Task Health_HTTP_is_neither_redirected_nor_normalized(string path)
+    [InlineData("/health/live", "127.0.0.1")]
+    [InlineData("/health/ready", "127.0.0.1")]
+    [InlineData("/health/live", "198.51.100.20")]
+    [InlineData("/health/ready", "198.51.100.20")]
+    public async Task Health_HTTP_is_neither_redirected_nor_normalized(string path, string peer)
     {
-        await using var app = await Start(); using var client = app.GetTestClient();
+        await using var app = await Start(peer: peer); using var client = app.GetTestClient();
         using var r = Request(path); using var response = await client.SendAsync(r);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("http", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("scheme").GetString());
@@ -241,13 +256,18 @@ public sealed class RenderFreeIngressTests
     [InlineData("Hosting:RenderFreeIngress:ExternalHostname", "ingress-proof.onrender.com/path")]
     [InlineData("Hosting:RenderFreeIngress:ExternalHostname", "ingress-proof.onrender.com.")]
     [InlineData("Hosting:RenderFreeIngress:PublicEdgeIsolationAcknowledged", "false")]
+    [InlineData("Hosting:RenderFreeIngress:PublicEdgeIsolationAcknowledged", null)]
     [InlineData("AllowedHosts", "other.onrender.com")]
     [InlineData("AllowedHosts", Host + ";other.onrender.com")]
     [InlineData("AllowedHosts", "*")]
     [InlineData("RENDER", "false")]
+    [InlineData("RENDER", null)]
     [InlineData("RENDER_SERVICE_TYPE", "pserv")]
+    [InlineData("RENDER_SERVICE_TYPE", null)]
     [InlineData("RENDER_EXTERNAL_HOSTNAME", "other.onrender.com")]
+    [InlineData("RENDER_EXTERNAL_HOSTNAME", null)]
     [InlineData("RENDER_EXTERNAL_URL", "http://ingress-proof.onrender.com")]
+    [InlineData("RENDER_EXTERNAL_URL", null)]
     [InlineData("RENDER_EXTERNAL_URL", "https://ingress-proof.onrender.com/path")]
     [InlineData("PORT", null)]
     [InlineData("PORT", "80")]
@@ -274,5 +294,17 @@ public sealed class RenderFreeIngressTests
     {
         var b = Builder(false);
         Assert.Null(RenderFreeIngressAdapter.Validate(b.Configuration, b.Environment).ExternalHostname);
+    }
+
+    [Fact]
+    public async Task Development_loopback_cannot_accidentally_receive_reconstruction()
+    {
+        var b = Builder(enabled: false, environment: "Development");
+        var adapter = RenderFreeIngressAdapter.Validate(b.Configuration, b.Environment);
+        var context = new DefaultHttpContext();
+        context.Request.Scheme = "http"; context.Request.Host = new HostString(Host);
+        context.Connection.LocalPort = 10000; context.Connection.RemoteIpAddress = IPAddress.Loopback;
+        await adapter.InvokeAsync(context, _ => Task.CompletedTask);
+        Assert.Equal("http", context.Request.Scheme);
     }
 }
