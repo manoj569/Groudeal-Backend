@@ -154,12 +154,12 @@ public partial class BackendTests(DatabaseFixture fixture) : IClassFixture<Datab
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
     private static async Task<T> Read<T>(HttpResponseMessage response) { var body = await response.Content.ReadAsStringAsync(); Assert.True(response.IsSuccessStatusCode, $"{response.StatusCode}: {body}"); return JsonSerializer.Deserialize<T>(body, Json)!; }
-    private static async Task<UserResponse> Register(HttpClient client, string prefix) => await Read<UserResponse>(await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest($"{prefix}-{Guid.NewGuid():N}@example.invalid", "Strong!Password123", prefix)));
-    private static async Task Login(HttpClient client, UserResponse user)
+    internal static async Task<UserResponse> Register(HttpClient client, string prefix) => await Read<UserResponse>(await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest($"{prefix}-{Guid.NewGuid():N}@example.invalid", "Strong!Password123", prefix)));
+    internal static async Task Login(HttpClient client, UserResponse user)
     {
         var t = await Read<TokenResponse>(await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(user.Email!, "Strong!Password123"))); var access = t.AccessToken ?? (await CompleteMfa(client, user, t)).AccessToken; client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", access);
     }
-    private static async Task Role(ApiFactory factory, Guid userId, string role)
+    internal static async Task Role(ApiFactory factory, Guid userId, string role)
     {
         await using var scope = factory.Services.CreateAsyncScope(); var manager = scope.ServiceProvider.GetRequiredService<UserManager<IdentityAccount>>(); var user = await manager.FindByIdAsync(userId.ToString()); Assert.True((await manager.AddToRoleAsync(user!, role)).Succeeded);
         if (role == "Admin") { user!.MfaEnrollmentAllowedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(15); Assert.True((await manager.UpdateAsync(user)).Succeeded); }

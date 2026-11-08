@@ -37,8 +37,10 @@ public record DiscoverySuggestion(string Type, Guid Id, string Text);
 public record DiscoverySuggestions(DiscoveryLocation Location, string Query, IReadOnlyList<DiscoverySuggestion> Items);
 public record CategoryDiscovery(DiscoveryLocation Location, DiscoveryCategory Category, IReadOnlyList<DiscoveryCategory> Subcategories,
     PageResponse<DealCard> Deals, PageResponse<DemandCard> Demands);
-public record CreateDemandRequest(string Title, string ServiceArea, Guid? CategoryId = null);
-public record DemandMembership(Guid DemandId, bool Joined);
+public record CreateDemandRequest(string Title, string ServiceArea, Guid? CategoryId = null,
+    DemandType? DemandType = null, Guid? ProductId = null, decimal? Quantity = null, string? Unit = null,
+    string? Requirement = null, string? Details = null);
+public record DemandMembership(Guid DemandId, bool Joined, DemandDetail? Demand = null);
 
 public interface IDiscovery
 {
@@ -53,6 +55,13 @@ public interface IDiscovery
     Task<DemandMembership> JoinDemand(Actor actor, Guid id, bool withdraw, CancellationToken ct);
     Task<DemandMembership> Membership(Actor actor, Guid id, CancellationToken ct);
     Task CloseDemand(Actor actor, Guid id, CancellationToken ct);
+    Task<DemandPreview> PreviewDemand(Actor actor, CreateDemandRequest request, CancellationToken ct);
+    Task<DemandDetail> DemandDetail(Guid id, Actor? actor, CancellationToken ct);
+    Task<PageResponse<MyDemand>> MyDemands(Actor actor, DemandListFilter filter, PageRequest page, CancellationToken ct);
+    Task<PageResponse<DemandDetail>> AdminDemands(Actor actor, DemandListFilter filter, PageRequest page, CancellationToken ct);
+    Task<AdminDemandDetail> AdminDemand(Actor actor, Guid id, CancellationToken ct);
+    Task<PageResponse<DemandAudit>> DemandAuditHistory(Actor actor, Guid id, PageRequest page, CancellationToken ct);
+    Task ModerateDemand(Actor actor, Guid id, ModerateDemandRequest request, CancellationToken ct);
 }
 
 public static class DiscoveryInput

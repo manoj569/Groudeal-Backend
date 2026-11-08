@@ -30,10 +30,15 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
         var area = "synthetic-" + Guid.NewGuid().ToString("N"); var postal = (900000 + Interlocked.Increment(ref sequence)).ToString();
         var f = new ApiFactory(fixture.Connection, overrides: new()
         {
-            ["Pilot:Enabled"] = "true", ["Pilot:ServiceAreas:0:Id"] = area, ["Pilot:ServiceAreas:0:Name"] = "Synthetic locality",
-            ["Pilot:ServiceAreas:0:PostalCodes:0"] = postal, ["Pilot:DeliveryFeeMinor"] = "0",
-            ["Payments:Enabled"] = payments.ToString(), ["Payments:Provider"] = payments ? "Sandbox" : null,
-            ["Payments:SandboxEnabled"] = payments.ToString(), ["Payments:SandboxWebhookSecret"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+            ["Pilot:Enabled"] = "true",
+            ["Pilot:ServiceAreas:0:Id"] = area,
+            ["Pilot:ServiceAreas:0:Name"] = "Synthetic locality",
+            ["Pilot:ServiceAreas:0:PostalCodes:0"] = postal,
+            ["Pilot:DeliveryFeeMinor"] = "0",
+            ["Payments:Enabled"] = payments.ToString(),
+            ["Payments:Provider"] = payments ? "Sandbox" : null,
+            ["Payments:SandboxEnabled"] = payments.ToString(),
+            ["Payments:SandboxWebhookSecret"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
             ["Cors:Origins:0"] = Frontend
         }, disableWorker: true);
         using var client = f.CreateClientWithEnvironmentVariable("Cors__Origins__0", Frontend);
@@ -44,8 +49,14 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
             db.Users.Add(new() { Id = id, UserName = id.ToString(), NormalizedUserName = id.ToString().ToUpperInvariant() });
             db.UsersProfile.Add(new() { Id = id, DisplayName = "PRIVATE_CUSTOMER_MARKER", Status = AccountStatus.Active });
         }
-        var seller = new Seller { OwnerUserId = owner, BusinessName = "Public Synthetic Shop", VerificationStatus = VerificationStatus.Approved,
-            ContactEmail = "PRIVATE_CONTACT_MARKER", ContactPhone = "PRIVATE_PHONE_MARKER" };
+        var seller = new Seller
+        {
+            OwnerUserId = owner,
+            BusinessName = "Public Synthetic Shop",
+            VerificationStatus = VerificationStatus.Approved,
+            ContactEmail = "PRIVATE_CONTACT_MARKER",
+            ContactPhone = "PRIVATE_PHONE_MARKER"
+        };
         var location = new SellerLocation { SellerId = seller.Id, PostalCode = postal, AddressLine1 = "PRIVATE_ADDRESS_MARKER" };
         var product = new Product { SellerId = seller.Id, CategoryId = CategorySeed.All[2].Id, Name = "Rice " + area, Slug = area };
         db.AddRange(seller, location, product);
@@ -64,10 +75,24 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
         await using var scope = data.Factory.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<MarketplaceDb>();
         var v = new ProductVariant { ProductId = data.Product, SellerId = data.Seller, SKU = Guid.NewGuid().ToString("N"), UnitQuantity = 1, VariantName = "1 kg" };
         db.Variants.Add(v); db.Inventories.Add(new() { SellerId = data.Seller, ProductVariantId = v.Id, AvailableQuantity = 100 });
-        var c = new GroupBuyCampaign { ProductVariantId = v.Id, SellerId = data.Seller, SellerLocationId = data.Location, Title = title,
-            Status = status, UsesTierPricing = true, ServiceArea = data.Area, TargetQuantity = 100, CommittedQuantity = 100,
-            MinimumReservationQuantity = 1, MaximumReservationQuantity = 100, ReferenceUnitPrice = 100, GroupUnitPrice = 80,
-            StartsAtUtc = DateTimeOffset.UtcNow.AddHours(-2), ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(2) };
+        var c = new GroupBuyCampaign
+        {
+            ProductVariantId = v.Id,
+            SellerId = data.Seller,
+            SellerLocationId = data.Location,
+            Title = title,
+            Status = status,
+            UsesTierPricing = true,
+            ServiceArea = data.Area,
+            TargetQuantity = 100,
+            CommittedQuantity = 100,
+            MinimumReservationQuantity = 1,
+            MaximumReservationQuantity = 100,
+            ReferenceUnitPrice = 100,
+            GroupUnitPrice = 80,
+            StartsAtUtc = DateTimeOffset.UtcNow.AddHours(-2),
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(2)
+        };
         db.Campaigns.Add(c);
         db.PriceTiers.AddRange(new CampaignPriceTier { CampaignId = c.Id, Quantity = 10, UnitPrice = 80 }, new CampaignPriceTier { CampaignId = c.Id, Quantity = 20, UnitPrice = 60 });
         db.AuditLogs.Add(new() { EntityId = c.Id, EntityType = nameof(GroupBuyCampaign), Action = "CampaignApproved", TimestampUtc = DateTimeOffset.UtcNow.AddMinutes(-publishedMinutesAgo) });
@@ -76,12 +101,30 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     private async Task Paid(Dataset data, Guid campaign, decimal quantity, PaymentState state = PaymentState.Captured, ReservationStatus status = ReservationStatus.Active, bool refund = false)
     {
         await using var scope = data.Factory.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<MarketplaceDb>();
-        var reservation = new GroupBuyReservation { CampaignId = campaign, CustomerUserId = data.Customer, Quantity = quantity, UnitPriceSnapshot = 80,
-            TotalPriceSnapshot = quantity * 80, Status = status, IdempotencyKey = Guid.NewGuid().ToString("N") };
-        var order = new PaymentOrder { CampaignId = campaign, CustomerId = data.Customer, ReservationId = reservation.Id, Quantity = quantity,
-            MaximumUnitPrice = 80, MaximumAmountMinor = (long)(quantity * 8000), State = state,
+        var reservation = new GroupBuyReservation
+        {
+            CampaignId = campaign,
+            CustomerUserId = data.Customer,
+            Quantity = quantity,
+            UnitPriceSnapshot = 80,
+            TotalPriceSnapshot = quantity * 80,
+            Status = status,
+            IdempotencyKey = Guid.NewGuid().ToString("N")
+        };
+        var order = new PaymentOrder
+        {
+            CampaignId = campaign,
+            CustomerId = data.Customer,
+            ReservationId = reservation.Id,
+            Quantity = quantity,
+            MaximumUnitPrice = 80,
+            MaximumAmountMinor = (long)(quantity * 8000),
+            State = state,
             CapturedAtUtc = state == PaymentState.Captured ? DateTimeOffset.UtcNow : null,
-            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1), IdempotencyKey = Guid.NewGuid().ToString("N"), Provider = "synthetic" };
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            Provider = "synthetic"
+        };
         db.AddRange(reservation, order);
         if (refund) db.PaymentRefunds.Add(new() { PaymentOrderId = order.Id, AmountMinor = 100, Reason = "synthetic", State = RefundState.Pending });
         var c = await db.Campaigns.SingleAsync(c => c.Id == campaign); c.ReservedQuantity += quantity;
@@ -110,8 +153,12 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     }
 
     [Theory]
-    [InlineData(CampaignStatus.Draft)] [InlineData(CampaignStatus.PendingApproval)] [InlineData(CampaignStatus.Cancelled)]
-    [InlineData(CampaignStatus.Expired)] [InlineData(CampaignStatus.Failed)] [InlineData(CampaignStatus.Successful)]
+    [InlineData(CampaignStatus.Draft)]
+    [InlineData(CampaignStatus.PendingApproval)]
+    [InlineData(CampaignStatus.Cancelled)]
+    [InlineData(CampaignStatus.Expired)]
+    [InlineData(CampaignStatus.Failed)]
+    [InlineData(CampaignStatus.Successful)]
     public async Task Ineligible_campaign_status_is_not_a_deal(CampaignStatus status)
     {
         var d = await Setup(); using var f = d.Factory; using var client = f.CreateClient(); await Campaign(d, status: status);
@@ -119,8 +166,14 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     }
 
     [Theory]
-    [InlineData("expired")] [InlineData("future")] [InlineData("seller")] [InlineData("owner")]
-    [InlineData("product")] [InlineData("variant")] [InlineData("location")] [InlineData("category")]
+    [InlineData("expired")]
+    [InlineData("future")]
+    [InlineData("seller")]
+    [InlineData("owner")]
+    [InlineData("product")]
+    [InlineData("variant")]
+    [InlineData("location")]
+    [InlineData("category")]
     public async Task Resource_and_time_eligibility_is_shared_across_all_discovery_paths(string resource)
     {
         var d = await Setup(); using var f = d.Factory; using var client = f.CreateClient(); var id = await Campaign(d);
@@ -199,7 +252,8 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     }
 
     [Theory]
-    [InlineData("%25_%27%5C")] [InlineData("%27%20OR%201%3D1--")]
+    [InlineData("%25_%27%5C")]
+    [InlineData("%27%20OR%201%3D1--")]
     public async Task Search_special_characters_are_literal_safe_parameters(string encoded)
     {
         var d = await Setup(); using var f = d.Factory; using var client = f.CreateClient(); await Campaign(d);
@@ -233,7 +287,8 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     }
 
     [Theory]
-    [InlineData("electronics")] [InlineData("unknown-category")]
+    [InlineData("electronics")]
+    [InlineData("unknown-category")]
     public async Task Inactive_or_unknown_category_is_not_discoverable(string slug)
     {
         var d = await Setup(); using var f = d.Factory; using var client = f.CreateClient(); Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/v1/categories/" + slug + "/discovery")).StatusCode);
@@ -349,8 +404,10 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
     }
 
     [Theory]
-    [InlineData("call 9999999999", false)] [InlineData("contact@example.invalid", false)]
-    [InlineData("<b>rice</b>", false)] [InlineData("Rice", true)]
+    [InlineData("call 9999999999", false)]
+    [InlineData("contact@example.invalid", false)]
+    [InlineData("<b>rice</b>", false)]
+    [InlineData("Rice", true)]
     public async Task Demand_creation_validates_public_content_and_area(string title, bool wrongArea)
     {
         var d = await Setup(); using var f = d.Factory; using var client = f.CreateClient(); await Login(client);
@@ -442,8 +499,10 @@ public sealed class DiscoveryTests(DatabaseFixture fixture) : IClassFixture<Data
             var product = new Product { SellerId = seller.Id, CategoryId = CategorySeed.All[2].Id, Name = "Legacy rice", Slug = "legacy" }; db.Products.Add(product); await db.SaveChangesAsync();
             var interest = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
             await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO customer_interests (\"Id\",\"CustomerId\",\"ProductId\",\"ServiceArea\",\"DesiredQuantity\",\"Active\",\"CreatedAt\",\"UpdatedAt\") VALUES ({interest},{user},{product.Id},{"synthetic"},{2m},{true},{now},{now})");
+            await migrator.MigrateAsync("20261107060508_HomeDiscoveryDemands");
+            var preserved = await db.Interests.AsNoTracking().Where(i => i.Id == interest).Select(i => new { i.ProductId, i.DemandId, i.DesiredQuantity }).SingleAsync(); Assert.Equal(product.Id, preserved.ProductId); Assert.Null(preserved.DemandId); Assert.Equal(2, preserved.DesiredQuantity);
             await migrator.MigrateAsync();
-            var preserved = await db.Interests.AsNoTracking().SingleAsync(i => i.Id == interest); Assert.Equal(product.Id, preserved.ProductId); Assert.Null(preserved.DemandId); Assert.Equal(2, preserved.DesiredQuantity);
+            var upgraded = await db.Interests.AsNoTracking().SingleAsync(i => i.Id == interest); Assert.Equal(product.Id, upgraded.ProductId); Assert.NotNull(upgraded.DemandId); Assert.Equal(2, upgraded.DesiredQuantity);
             await Assert.ThrowsAsync<NotSupportedException>(() => migrator.MigrateAsync("20261106155504_PersistDataProtectionKeys"));
             Assert.Equal(db.Database.GetMigrations(), await db.Database.GetAppliedMigrationsAsync());
         }

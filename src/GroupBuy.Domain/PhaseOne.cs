@@ -33,6 +33,10 @@ public sealed partial class GroupBuyCampaign
 }
 public sealed class CustomerInterest : TrackedEntity
 {
+    public decimal? RequestedQuantity { get; set; }
+    public string? RequestedUnit { get; set; }
+    public string? RequirementText { get; set; }
+    public string? RequirementDetails { get; set; }
     public Guid CustomerId { get; set; }
     public Guid? ProductId { get; set; }
     public Guid? DemandId { get; set; }
@@ -131,35 +135,35 @@ public sealed class SandboxRefundReceipt : Entity
 }
 public static class TierPricing
 {
-    public static void ValidateRefundability(long maximum,IEnumerable<long> possibleFinalAmounts,long minimumRefund)
+    public static void ValidateRefundability(long maximum, IEnumerable<long> possibleFinalAmounts, long minimumRefund)
     {
-        if(minimumRefund<=0 || maximum<minimumRefund || possibleFinalAmounts.Any(final=>final<minimumRefund || final>maximum || (maximum-final>0 && maximum-final<minimumRefund)))
-            throw new BusinessException(400,"unsupported_payment_amount","Quantity or pricing cannot be safely refunded with this provider. Review the quantity and tiers before payment.");
+        if (minimumRefund <= 0 || maximum < minimumRefund || possibleFinalAmounts.Any(final => final < minimumRefund || final > maximum || (maximum - final > 0 && maximum - final < minimumRefund)))
+            throw new BusinessException(400, "unsupported_payment_amount", "Quantity or pricing cannot be safely refunded with this provider. Review the quantity and tiers before payment.");
     }
     public static void Validate(IReadOnlyList<(decimal Quantity, decimal Price)> tiers, decimal capacity, decimal referencePrice)
     {
-        if (tiers.Count is < 1 or > 10 || capacity <= 0) throw new BusinessException(400,"invalid_tiers","Use one to ten ordered tiers.");
-        decimal previousQuantity=0, previousPrice=referencePrice;
-        foreach(var t in tiers)
+        if (tiers.Count is < 1 or > 10 || capacity <= 0) throw new BusinessException(400, "invalid_tiers", "Use one to ten ordered tiers.");
+        decimal previousQuantity = 0, previousPrice = referencePrice;
+        foreach (var t in tiers)
         {
-            if(t.Quantity<=previousQuantity || t.Quantity>capacity || decimal.Round(t.Quantity,3)!=t.Quantity || t.Price<=0 || t.Price>previousPrice || decimal.Round(t.Price,2)!=t.Price)
-                throw new BusinessException(400,"invalid_tiers","Thresholds must increase and prices must not increase.");
-            previousQuantity=t.Quantity;previousPrice=t.Price;
+            if (t.Quantity <= previousQuantity || t.Quantity > capacity || decimal.Round(t.Quantity, 3) != t.Quantity || t.Price <= 0 || t.Price > previousPrice || decimal.Round(t.Price, 2) != t.Price)
+                throw new BusinessException(400, "invalid_tiers", "Thresholds must increase and prices must not increase.");
+            previousQuantity = t.Quantity; previousPrice = t.Price;
         }
     }
-    public static decimal? Achieved(IEnumerable<(decimal Quantity,decimal Price)> tiers,decimal quantity) => tiers.Where(t=>t.Quantity<=quantity).OrderByDescending(t=>t.Quantity).Select(t=>(decimal?)t.Price).FirstOrDefault();
-    public static long Minor(decimal amount) => checked((long)decimal.Round(amount*100,0,MidpointRounding.AwayFromZero));
-    public static bool CanFulfill(FulfillmentState from,FulfillmentState to,OrderFulfillmentMode mode) => (from,to) switch
+    public static decimal? Achieved(IEnumerable<(decimal Quantity, decimal Price)> tiers, decimal quantity) => tiers.Where(t => t.Quantity <= quantity).OrderByDescending(t => t.Quantity).Select(t => (decimal?)t.Price).FirstOrDefault();
+    public static long Minor(decimal amount) => checked((long)decimal.Round(amount * 100, 0, MidpointRounding.AwayFromZero));
+    public static bool CanFulfill(FulfillmentState from, FulfillmentState to, OrderFulfillmentMode mode) => (from, to) switch
     {
-        (FulfillmentState.Pending,FulfillmentState.CampaignConfirmed)=>true,
-        (FulfillmentState.CampaignConfirmed,FulfillmentState.Preparing)=>true,
-        (FulfillmentState.Preparing,FulfillmentState.ReadyForCollection)=>true,
-        (FulfillmentState.ReadyForCollection,FulfillmentState.CollectedFromSeller)=>mode==OrderFulfillmentMode.FounderDelivery,
-        (FulfillmentState.CollectedFromSeller,FulfillmentState.OutForDelivery)=>mode==OrderFulfillmentMode.FounderDelivery,
-        (FulfillmentState.OutForDelivery,FulfillmentState.DeliveryFailed)=>true,
-        (FulfillmentState.DeliveryFailed,FulfillmentState.RescheduleRequired)=>true,
-        (FulfillmentState.RescheduleRequired,FulfillmentState.OutForDelivery)=>true,
-        (FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired,FulfillmentState.RefundRequired)=>true,
-        _=>false
+        (FulfillmentState.Pending, FulfillmentState.CampaignConfirmed) => true,
+        (FulfillmentState.CampaignConfirmed, FulfillmentState.Preparing) => true,
+        (FulfillmentState.Preparing, FulfillmentState.ReadyForCollection) => true,
+        (FulfillmentState.ReadyForCollection, FulfillmentState.CollectedFromSeller) => mode == OrderFulfillmentMode.FounderDelivery,
+        (FulfillmentState.CollectedFromSeller, FulfillmentState.OutForDelivery) => mode == OrderFulfillmentMode.FounderDelivery,
+        (FulfillmentState.OutForDelivery, FulfillmentState.DeliveryFailed) => true,
+        (FulfillmentState.DeliveryFailed, FulfillmentState.RescheduleRequired) => true,
+        (FulfillmentState.RescheduleRequired, FulfillmentState.OutForDelivery) => true,
+        (FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired, FulfillmentState.RefundRequired) => true,
+        _ => false
     };
 }

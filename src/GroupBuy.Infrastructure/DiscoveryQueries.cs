@@ -67,18 +67,28 @@ public sealed class DiscoveryQueries(MarketplaceDb db, IConfiguration config, Ti
                        + c.MinimumReservationQuantity <= c.TargetQuantity
                    && c.CommittedQuantity >= c.TargetQuantity
                    && (query == null || c.Title.ToLower().Contains(query) || p.Name.ToLower().Contains(query))
-               select new DealRow { Id = c.Id, ProductId = p.Id, CategoryId = p.CategoryId, Title = c.Title,
-                   ProductName = p.Name, SellerName = s.BusinessName, ReferencePrice = c.ReferenceUnitPrice,
+               select new DealRow
+               {
+                   Id = c.Id,
+                   ProductId = p.Id,
+                   CategoryId = p.CategoryId,
+                   Title = c.Title,
+                   ProductName = p.Name,
+                   SellerName = s.BusinessName,
+                   ReferencePrice = c.ReferenceUnitPrice,
                    PaidQuantity = orders.Where(o => o.CampaignId == c.Id && o.State == PaymentState.Captured && o.CapturedAtUtc != null
                        && o.RefundedMinor == 0 && o.FinalAmountMinor == null
                        && !db.PaymentRefunds.Any(r => r.PaymentOrderId == o.Id)
                        && db.UsersProfile.Any(u => u.Id == o.CustomerId && u.Status == AccountStatus.Active)
                        && db.Reservations.Any(r => r.Id == o.ReservationId && r.CampaignId == c.Id && r.CustomerUserId == o.CustomerId
                            && r.Status == ReservationStatus.Active && r.Quantity == o.Quantity)).Sum(o => (decimal?)o.Quantity) ?? 0,
-                   Target = c.TargetQuantity, Status = c.Status,
+                   Target = c.TargetQuantity,
+                   Status = c.Status,
                    Published = db.AuditLogs.Where(a => a.EntityId == c.Id && a.EntityType == "GroupBuyCampaign" && a.Action == "CampaignApproved")
                        .Max(a => (DateTimeOffset?)a.TimestampUtc) ?? c.StartsAtUtc,
-                   Ends = c.ExpiresAtUtc, ServiceArea = c.ServiceArea };
+                   Ends = c.ExpiresAtUtc,
+                   ServiceArea = c.ServiceArea
+               };
     }
 
     internal IQueryable<DemandRow> DemandRows(DiscoveryLocation location, Guid? category, string? query = null)
@@ -87,20 +97,38 @@ public sealed class DiscoveryQueries(MarketplaceDb db, IConfiguration config, Ti
             && db.UsersProfile.Any(u => u.Id == i.CustomerId && u.Status == AccountStatus.Active));
         var productDemand = from i in interests
                             join p in Products(location, category) on i.ProductId equals p.Id
-                            where query == null || p.Name.ToLower().Contains(query)
+                            where (query == null || p.Name.ToLower().Contains(query))
+                                && !db.DiscoveryDemands.Any(d => d.ProductId == p.Id && d.ServiceArea == i.ServiceArea && !d.IsOpen)
                             group i by new { p.Id, p.CategoryId, p.Name, i.ServiceArea } into g
-                            select new DemandRow { Id = g.Key.Id, ProductId = g.Key.Id, CategoryId = g.Key.CategoryId, Title = g.Key.Name,
-                                Source = "product_interest", ServiceArea = g.Key.ServiceArea, Customers = g.Select(i => i.CustomerId).Distinct().Count(), Updated = g.Max(i => i.UpdatedAt) };
+                            select new DemandRow
+                            {
+                                Id = g.Key.Id,
+                                ProductId = g.Key.Id,
+                                CategoryId = g.Key.CategoryId,
+                                Title = g.Key.Name,
+                                Source = "product_interest",
+                                ServiceArea = g.Key.ServiceArea,
+                                Customers = g.Select(i => i.CustomerId).Distinct().Count(),
+                                Updated = g.Max(i => i.UpdatedAt)
+                            };
         var freeDemand = from d in db.DiscoveryDemands.AsNoTracking()
-                         where location.Supported && d.IsOpen && d.ServiceArea == location.ServiceArea
+                         where location.Supported && d.IsOpen && d.ProductId == null && d.ServiceArea == location.ServiceArea
                              && (d.CategoryId == null || db.Categories.Any(c => c.Id == d.CategoryId && c.IsActive
                                  && (c.ParentCategoryId == null || db.Categories.Any(p => p.Id == c.ParentCategoryId && p.IsActive))))
                              && (category == null || d.CategoryId == category || db.Categories.Any(c => c.Id == d.CategoryId && c.ParentCategoryId == category))
                              && (query == null || d.Title.ToLower().Contains(query))
                              && interests.Any(i => i.DemandId == d.Id)
-                         select new DemandRow { Id = d.Id, ProductId = null, CategoryId = d.CategoryId, Title = d.Title, Source = "free_text", ServiceArea = d.ServiceArea,
+                         select new DemandRow
+                         {
+                             Id = d.Id,
+                             ProductId = null,
+                             CategoryId = d.CategoryId,
+                             Title = d.Title,
+                             Source = "free_text",
+                             ServiceArea = d.ServiceArea,
                              Customers = interests.Where(i => i.DemandId == d.Id).Select(i => i.CustomerId).Distinct().Count(),
-                             Updated = interests.Where(i => i.DemandId == d.Id).Max(i => i.UpdatedAt) };
+                             Updated = interests.Where(i => i.DemandId == d.Id).Max(i => i.UpdatedAt)
+                         };
         return productDemand.Concat(freeDemand);
     }
 

@@ -368,6 +368,22 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.Property<Guid?>("ProductId")
                         .HasColumnType("uuid");
 
+                    b.Property<decimal?>("RequestedQuantity")
+                        .HasPrecision(18, 3)
+                        .HasColumnType("numeric(18,3)");
+
+                    b.Property<string>("RequestedUnit")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<string>("RequirementDetails")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("RequirementText")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<string>("ServiceArea")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -378,13 +394,15 @@ namespace GroupBuy.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DemandId");
-
                     b.HasIndex("ProductId");
 
                     b.HasIndex("CustomerId", "DemandId")
                         .IsUnique()
                         .HasFilter("\"DemandId\" IS NOT NULL");
+
+                    b.HasIndex("DemandId", "ServiceArea");
+
+                    b.HasIndex("CustomerId", "CreatedAt", "Id");
 
                     b.HasIndex("CustomerId", "ProductId", "ServiceArea")
                         .IsUnique();
@@ -395,7 +413,9 @@ namespace GroupBuy.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("ck_interest_quantity", "\"DesiredQuantity\" > 0 AND \"DesiredQuantity\" <= 1000000");
 
-                            t.HasCheckConstraint("ck_interest_target", "(\"ProductId\" IS NOT NULL) <> (\"DemandId\" IS NOT NULL)");
+                            t.HasCheckConstraint("ck_interest_requirement", "(\"RequestedQuantity\" IS NULL AND \"RequestedUnit\" IS NULL) OR (\"RequestedQuantity\" IS NOT NULL AND \"RequestedUnit\" IS NOT NULL AND \"RequestedQuantity\" > 0 AND \"RequestedQuantity\" <= 1000000 AND \"RequestedUnit\" IN ('kg','l','piece','pack','household','project','hour','visit','square_metre'))");
+
+                            t.HasCheckConstraint("ck_interest_target", "\"ProductId\" IS NOT NULL OR \"DemandId\" IS NOT NULL");
                         });
                 });
 
@@ -408,16 +428,40 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.Property<Guid?>("CategoryId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTimeOffset?>("ClosedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ClosureReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("DemandType")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsCancelled")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsOpen")
                         .HasColumnType("boolean");
+
+                    b.Property<bool>("LegacyIdentity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<string>("NormalizedTitle")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("ServiceArea")
                         .IsRequired()
@@ -437,9 +481,33 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.HasIndex("CategoryId");
 
                     b.HasIndex("NormalizedTitle", "ServiceArea")
+                        .IsUnique()
+                        .HasFilter("\"LegacyIdentity\"");
+
+                    b.HasIndex("ProductId", "ServiceArea")
+                        .IsUnique()
+                        .HasFilter("\"ProductId\" IS NOT NULL");
+
+                    b.HasIndex("CreatedBy", "CreatedAt", "Id");
+
+                    b.HasIndex("Id", "ProductId", "ServiceArea")
                         .IsUnique();
 
-                    b.ToTable("discovery_demands", (string)null);
+                    b.HasIndex("DemandType", "CategoryId", "ProductId", "NormalizedTitle", "ServiceArea")
+                        .IsUnique();
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("DemandType", "CategoryId", "ProductId", "NormalizedTitle", "ServiceArea"), false);
+
+                    b.HasIndex("ServiceArea", "IsOpen", "DemandType", "CreatedAt", "Id");
+
+                    b.ToTable("discovery_demands", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_demand_lifecycle", "NOT \"IsCancelled\" OR NOT \"IsOpen\"");
+
+                            t.HasCheckConstraint("ck_demand_product_type", "\"ProductId\" IS NULL OR (\"DemandType\" = 0 AND \"NormalizedTitle\" = '')");
+
+                            t.HasCheckConstraint("ck_demand_type", "\"DemandType\" IN (0,1)");
+                        });
                 });
 
             modelBuilder.Entity("GroupBuy.Domain.GroupBuyCampaign", b =>
@@ -1942,6 +2010,12 @@ namespace GroupBuy.Infrastructure.Migrations
                         .WithMany()
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("GroupBuy.Domain.DiscoveryDemand", null)
+                        .WithMany()
+                        .HasForeignKey("DemandId", "ServiceArea")
+                        .HasPrincipalKey("Id", "ServiceArea")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("GroupBuy.Domain.DiscoveryDemand", b =>
@@ -1949,6 +2023,16 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.HasOne("GroupBuy.Domain.Category", null)
                         .WithMany()
                         .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("GroupBuy.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedBy")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("GroupBuy.Domain.Product", null)
+                        .WithMany()
+                        .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
