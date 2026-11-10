@@ -41,6 +41,7 @@ builder.Services.AddScoped<IOperations>(s => s.GetRequiredService<Marketplace>()
 builder.Services.AddScoped<IAdministration>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddHttpClient("Razorpay");
 builder.Services.AddScoped<IPaymentGateway>(PilotConfiguration.Gateway);
+builder.Services.AddScoped<ICheckout>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddScoped<IGroupDeals>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddScoped<IPhaseOne>(s => s.GetRequiredService<Marketplace>());
 builder.Services.AddScoped<DiscoveryAreas>();
@@ -134,6 +135,7 @@ app.MapMarketplace();
 app.MapCustomerAuthentication();
 app.MapPhaseOne();
 app.MapGroupDeals();
+app.MapCheckout();
 app.MapDiscovery();
 app.MapOperations();
 app.MapAdministration();

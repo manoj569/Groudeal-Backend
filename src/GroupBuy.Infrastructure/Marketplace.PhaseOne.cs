@@ -86,9 +86,11 @@ public sealed partial class Marketplace : IPhaseOne
         o.Attempts = 0; o.RetryAtUtc = null; o.ErrorCode = null; await ResetPilotJob(actor, "payment_reconciliation", id, ct); Audit(actor, "PaymentReconciliationRetryApproved", o); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
     private async Task<PaymentOrder> OwnOrder(Actor a, Guid id, CancellationToken ct) => await db.PaymentOrders.SingleOrDefaultAsync(o => o.Id == id && o.CustomerId == a.UserId, ct) ?? throw Missing();
-    public async Task<PaymentOrderResponse> Join(Actor actor, PaymentOrderRequest request, CancellationToken ct)
+    public Task<PaymentOrderResponse> Join(Actor actor, PaymentOrderRequest request, CancellationToken ct) => JoinCore(actor,request,null,ct);
+    private async Task<PaymentOrderResponse> JoinCore(Actor actor, PaymentOrderRequest request, QuotePayload? quote, CancellationToken ct)
     {
-        Pilot(); Require(gateway.Available, "Payments are not activated.", 503); Require(request.IdempotencyKey is { Length: >= 8 and <= 100 } && Enum.IsDefined(request.FulfillmentMode), "Invalid checkout request.", 400);
+        if (quote is null) { Pilot(); Require(gateway.Available, "Payments are not activated.", 503); }
+        Require(request.IdempotencyKey is { Length: >= 8 and <= 100 } && Enum.IsDefined(request.FulfillmentMode), "Invalid checkout request.", 400);
         var address = request.Address is null ? "" : JsonSerializer.Serialize(request.Address); var digest = Digest(address); Guid orderId;
         await using (var tx = await db.Database.BeginTransactionAsync(ct))
         {
@@ -97,30 +99,14 @@ public sealed partial class Marketplace : IPhaseOne
             else
             {
                 var now = clock.GetUtcNow();
-                if (c.OriginatingDemandId is not null || !await PhysicalVariant(c.ProductVariantId, ct))
-                {
-                    _ = SupportedDealArea(c.ServiceArea);
-                    Require(!await db.PaymentOrders.AnyAsync(o => o.CampaignId == c.Id && o.CustomerId == actor.UserId &&
-                        ((o.ReservationId != null && db.Reservations.Any(r => r.Id == o.ReservationId && r.Status == ReservationStatus.Active)) ||
-                         ((o.State == PaymentState.Creating || o.State == PaymentState.Pending || o.State == PaymentState.Authorized) && o.ExpiresAtUtc > now)), ct), "Already joined this group deal.");
-                }
-                Require(Eligible(s) && FinancialOpen(c) && c.StartsAtUtc <= now && c.ExpiresAtUtc > now, "Campaign is not accepting payments."); await CheckOperationalResources(s, c, ct); _ = Area(c.ServiceArea);
-                var unit = await db.Variants.Where(v => v.Id == c.ProductVariantId).Select(v => v.UnitOfMeasure).SingleAsync(ct);
-                Require(request.Quantity >= c.MinimumReservationQuantity && request.Quantity <= c.MaximumReservationQuantity && decimal.Round(request.Quantity, 3) == request.Quantity && (unit is not (UnitOfMeasure.Piece or UnitOfMeasure.Pack) || request.Quantity == decimal.Truncate(request.Quantity)), "Invalid reservation quantity.", 400);
-                var holds = await db.PaymentOrders.Where(o => o.CampaignId == c.Id && (o.State == PaymentState.Creating || o.State == PaymentState.Pending || o.State == PaymentState.Authorized) && o.ExpiresAtUtc > now).SumAsync(o => (decimal?)o.Quantity, ct) ?? 0;
-                Require(c.ReservedQuantity + holds + request.Quantity <= c.TargetQuantity && c.CommittedQuantity >= c.ReservedQuantity + holds + request.Quantity, "Campaign capacity is unavailable.");
-                Require(await PhysicalVariant(c.ProductVariantId, ct) || request.FulfillmentMode == OrderFulfillmentMode.SellerPickup, "Services and memberships use seller entitlement redemption; delivery is unavailable.", 400);
-                long fee = 0; if (request.FulfillmentMode == OrderFulfillmentMode.FounderDelivery)
-                {
-                    var a = request.Address; Require(a is not null && a.ServiceArea == c.ServiceArea && Area(c.ServiceArea).PostalCodes.Contains(a.PostalCode) && a.Recipient is { Length: >= 1 and <= 100 } && !string.IsNullOrWhiteSpace(a.Recipient) && a.Phone is { Length: >= 8 and <= 16 } && System.Text.RegularExpressions.Regex.IsMatch(a.Phone, "^\\+?[0-9]{8,15}$") && a.Address is { Length: >= 5 and <= 500 } && !string.IsNullOrWhiteSpace(a.Address) && (a.Landmark?.Length ?? 0) <= 200, "Delivery address is outside the configured service area or invalid.", 400);
-                    fee = config.GetValue<long?>("Pilot:DeliveryFeeMinor") ?? throw new BusinessException(503, "delivery_unavailable", "An approved delivery fee is required.");
-                }
-                else Require(request.Address is null, "Pickup does not require a delivery address.", 400);
-                var prices = await db.PriceTiers.Where(t => t.CampaignId == c.Id).OrderBy(t => t.Quantity).Select(t => t.UnitPrice).ToListAsync(ct); var price = prices[0];
-                Require(prices.All(p => TierPricing.Minor(p * request.Quantity) > 0), "Quantity is below the supported currency precision.", 400);
-                TierPricing.ValidateRefundability(checked(TierPricing.Minor(price * request.Quantity) + fee), prices.Select(p => checked(TierPricing.Minor(p * request.Quantity) + fee)), gateway.MinimumRefundMinor);
+                if (quote is not null) CheckoutRequire(quote.ExpiresAtUtc > now,"checkout_quote_expired","Checkout quote expired. Request a new quote.");
+                var selection = await CheckoutSelectionFor(actor,s,c,new(request.Quantity,request.FulfillmentMode,request.Address,quote?.Selections.ProductVariantId),quote is not null,ct);
+                if (quote is not null) CheckoutRequire(selection.Fingerprint == quote.Fingerprint,"checkout_quote_expired","Commercial conditions changed. Request a new quote.");
+                var price = selection.MaximumPrice; var fee = selection.Fee;
                 var o = new PaymentOrder { CampaignId = c.Id, CustomerId = actor.UserId, Quantity = request.Quantity, MaximumUnitPrice = price, MaximumAmountMinor = checked(TierPricing.Minor(price * request.Quantity) + fee), DeliveryFeeMinor = fee, State = PaymentState.Creating, IdempotencyKey = request.IdempotencyKey, Provider = gateway.Name, ExpiresAtUtc = now.AddMinutes(10) < c.ExpiresAtUtc ? now.AddMinutes(10) : c.ExpiresAtUtc, FulfillmentMode = request.FulfillmentMode, AddressDigest = digest, AddressCiphertext = address.Length == 0 ? "" : protection.CreateProtector("Groudeal.PhaseOne.DeliveryAddress.v1").Protect(address) };
-                db.PaymentOrders.Add(o); Audit(actor, "PaymentOrderCreated", o); await db.SaveChangesAsync(ct); orderId = o.Id;
+                db.PaymentOrders.Add(o);
+                if (quote is not null) db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId, Action = "CheckoutConfirmed", EntityType = nameof(PaymentOrder), EntityId = o.Id, CorrelationId = actor.CorrelationId, SafeMetadataJson = JsonSerializer.Serialize(new { quoteId = quote.Id }) });
+                Audit(actor, "PaymentOrderCreated", o); await db.SaveChangesAsync(ct); orderId = o.Id;
             }
             await tx.CommitAsync(ct);
         }
