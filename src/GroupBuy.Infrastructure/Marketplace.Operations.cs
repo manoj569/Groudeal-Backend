@@ -16,6 +16,8 @@ public sealed partial class Marketplace
             DeduplicationKey = $"{type}:{entity:N}:{user:N}", CreatedAtUtc = clock.GetUtcNow() });
     }
 
+    private Task<bool> PhysicalVariant(Guid variant, CancellationToken ct) => db.Variants.AnyAsync(v => v.Id == variant && db.Products.Any(p => p.Id == v.ProductId && p.ProductType == ProductType.Physical), ct);
+
     private async Task<decimal> FreeInventory(Guid variant, CancellationToken ct)
     {
         var available = await db.Inventories.Where(i => i.ProductVariantId == variant).Select(i => (decimal?)i.AvailableQuantity).SingleOrDefaultAsync(ct) ?? 0;
@@ -37,6 +39,7 @@ public sealed partial class Marketplace
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var seller = await OwnedSeller(actor, ct); seller = await LockSeller(seller.Id, ct); Require(Eligible(seller), "Approved seller required.", 403);
         var variant = await db.Variants.AsNoTracking().SingleOrDefaultAsync(v => v.Id == variantId && db.Products.Any(p => p.Id == v.ProductId && p.SellerId == seller.Id), ct) ?? throw Missing();
+        Require(await PhysicalVariant(variantId, ct), "Nonphysical offers use campaign capacity, not stock inventory.", 400);
         var committed = await db.Campaigns.Where(c => c.ProductVariantId == variantId).SumAsync(c => c.CommittedQuantity, ct);
         InventoryRules.Validate(request.AvailableQuantity, committed, variant.UnitOfMeasure);
         var inventory = await db.Inventories.SingleOrDefaultAsync(i => i.ProductVariantId == variantId, ct);
@@ -316,7 +319,7 @@ public sealed partial class Marketplace
             foreach (var r in reservations) { r.Status = ReservationStatus.Expired; r.UpdatedAt = now; }
             c.ReservedQuantity = 0; Audit(null, "CampaignExpired", c);
         }
-        else if (c.Status == CampaignStatus.Scheduled && c.StartsAtUtc <= now) { c.TransitionTo(CampaignStatus.Open); Audit(null, "CampaignOpened", c); }
+        else if (c.Status == CampaignStatus.Scheduled && c.StartsAtUtc <= now) { c.TransitionTo(CampaignStatus.Open); await NotifyDemandOffer(c, ct); Audit(null, "CampaignOpened", c); }
         else if (c.Status == CampaignStatus.TargetReached && c.CommittedQuantity > 0)
         {
             c.TransitionTo(CampaignStatus.AwaitingSellerConfirmation); c.ConfirmationDeadlineUtc = now.AddMinutes(config.GetValue("Operations:ConfirmationMinutes", 60));

@@ -165,23 +165,30 @@ public partial class BackendTests(DatabaseFixture fixture) : IClassFixture<Datab
         if (role == "Admin") { user!.MfaEnrollmentAllowedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(15); Assert.True((await manager.UpdateAsync(user)).Succeeded); }
     }
     private static SellerRequest SellerRequest(string name) => new(name, SellerType.Grocery, "Integration seller", "shop@example.invalid", "+919876543210", "12345678901234", new("Pickup Road", null, "Area", "City", "State", "110001", null, null));
-    private async Task<(ApiFactory Factory, HttpClient Admin, HttpClient Seller, HttpClient Customer, Guid Campaign, Guid CustomerId)> Setup(decimal target = 10, bool tier = false, bool disableWorker = false)
+    private async Task<(ApiFactory Factory, HttpClient Admin, HttpClient Seller, HttpClient Customer, Guid Campaign, Guid CustomerId)> Setup(decimal target = 10, bool tier = false, bool disableWorker = false, ProductType dealType = ProductType.Physical, bool demandLinked = false, IReadOnlyList<PriceTierRequest>? priceTiers = null, bool catalogDemand = false)
     {
         var f = new ApiFactory(fixture.Connection, overrides: tier ? new() {
-            ["Pilot:Enabled"]="true",["Pilot:ServiceAreas:0:Id"]="synthetic-area",["Pilot:ServiceAreas:0:Name"]="Synthetic test area",["Pilot:ServiceAreas:0:PostalCodes:0"]="TEST01",["Pilot:DeliveryFeeMinor"]="3000",
+            ["Pilot:Enabled"]="true",["Pilot:ServiceAreas:0:Id"]="synthetic-area",["Pilot:ServiceAreas:0:Name"]="Synthetic test area",["Pilot:ServiceAreas:0:PostalCodes:0"]=demandLinked ? "900001" : "TEST01",["Pilot:DeliveryFeeMinor"]="3000",
             ["Payments:Enabled"]="true",["Payments:Provider"]="Sandbox",["Payments:SandboxEnabled"]="true",["Payments:SandboxWebhookSecret"]=Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
         } : null, disableWorker: disableWorker); var admin = f.CreateClient(); var seller = f.CreateClient(); var customer = f.CreateClient();
         var s = await Register(seller, "seller"); await Login(seller, s); var c = await Register(customer, "customer"); await Login(customer, c);
         var profile = await Read<SellerResponse>(await seller.PostAsJsonAsync("/api/v1/seller/profile", SellerRequest("Test Shop")));
-        var unapproved = await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(Guid.NewGuid(), Guid.NewGuid(), "Test", "", 100, 80, target, 1, target, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)));
+        var unapproved = await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(Guid.NewGuid(), Guid.NewGuid(), "Test", "", 100, 80, target, 1, dealType == ProductType.Physical ? target : 1, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)));
         Assert.Equal(HttpStatusCode.Forbidden, unapproved.StatusCode);
         // Enroll/authenticate immediately before Admin work, keeping real MFA/token expiry rules intact.
         var a = await Register(admin, "admin"); await Role(f, a.Id, "Admin"); await Login(admin, a);
         await Read<SellerReviewResponse>(await admin.PostAsJsonAsync($"/api/v1/admin/sellers/{profile.Id}/approve", new ReviewRequest(null))); await Login(seller, s);
-        var product = await Read<ProductResponse>(await seller.PostAsJsonAsync("/api/v1/seller/products", new ProductRequest(CategorySeed.All[1].Id, "Wheat", "wheat", "Test", ProductType.Physical, Guid.NewGuid().ToString("N"), "1 kg", UnitOfMeasure.Kilogram, 1, "{}")));
-        await Read<InventoryResponse>(await seller.PutAsJsonAsync($"/api/v1/seller/inventory/{product.Variants[0].Id}", new InventoryRequest(target, 0)));
-        var campaign = await Read<CampaignResponse>(await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(product.Variants[0].Id, profile.PickupLocations[0].Id, "Test wheat", "Test", 100, 80, target, 1, target, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1))));
-        if(tier)await Read<TierCampaignResponse>(await seller.PutAsJsonAsync($"/api/v1/mvp/seller/campaigns/{campaign.Id}/tiers",new TierConfigurationRequest("synthetic-area",[new(target/2,80),new(target,60)],null)));
+        var product = await Read<ProductResponse>(await seller.PostAsJsonAsync("/api/v1/seller/products", new ProductRequest(CategorySeed.All[1].Id, "Wheat", "wheat", "Test", dealType, Guid.NewGuid().ToString("N"), "1 unit", dealType == ProductType.Physical ? UnitOfMeasure.Kilogram : UnitOfMeasure.Piece, 1, "{}")));
+        if (dealType == ProductType.Physical) await Read<InventoryResponse>(await seller.PutAsJsonAsync($"/api/v1/seller/inventory/{product.Variants[0].Id}", new InventoryRequest(target, 0)));
+        var campaign = await Read<CampaignResponse>(await seller.PostAsJsonAsync("/api/v1/seller/group-buys", new CampaignRequest(product.Variants[0].Id, profile.PickupLocations[0].Id, "Test wheat", "Test", 100, 80, target, 1, dealType == ProductType.Physical ? target : 1, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1))));
+        if(tier)await Read<TierCampaignResponse>(await seller.PutAsJsonAsync($"/api/v1/mvp/seller/campaigns/{campaign.Id}/tiers",new TierConfigurationRequest("synthetic-area",priceTiers ?? [new(target/2,80),new(target,60)],null)));
+        if (demandLinked)
+        {
+            await using var scope = f.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<MarketplaceDb>();
+            var demand = new DiscoveryDemand { Title = "Synthetic opportunity", ServiceArea = "synthetic-area", CategoryId = product.CategoryId, DemandType = dealType == ProductType.Physical ? DemandType.Product : DemandType.Service, ProductId = catalogDemand ? product.Id : null, LegacyIdentity = false, NormalizedTitle = catalogDemand ? "" : Guid.NewGuid().ToString("N") };
+            db.DiscoveryDemands.Add(demand); await db.SaveChangesAsync();
+            await Read<CampaignResponse>(await seller.PutAsJsonAsync($"/api/v1/seller/group-buys/{campaign.Id}/demand-offer", new LinkDemandOfferRequest(demand.Id, "Synthetic customer terms for entitlement redemption.")));
+        }
         await Read<CampaignResponse>(await seller.PostAsync($"/api/v1/seller/group-buys/{campaign.Id}/submit", null));
         await Read<CampaignResponse>(await admin.PostAsJsonAsync($"/api/v1/admin/group-buys/{campaign.Id}/approve", new ReviewRequest(null)));
         return (f, admin, seller, customer, campaign.Id, c.Id);

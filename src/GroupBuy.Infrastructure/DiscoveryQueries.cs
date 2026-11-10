@@ -7,6 +7,7 @@ namespace GroupBuy.Infrastructure;
 
 internal sealed class DealRow
 {
+    public ProductType ProductType { get; init; }
     public Guid Id { get; init; }
     public Guid ProductId { get; init; }
     public Guid CategoryId { get; init; }
@@ -61,7 +62,7 @@ public sealed class DiscoveryQueries(MarketplaceDb db, IConfiguration config, Ti
                    && c.StartsAtUtc <= now && c.ExpiresAtUtc > now && c.ServiceArea == location.ServiceArea
                    && db.Locations.Any(l => l.Id == c.SellerLocationId && l.SellerId == s.Id && l.IsActive && l.IsPickupEnabled && codes.Contains(l.PostalCode))
                    && db.PriceTiers.Any(t => t.CampaignId == c.Id)
-                   && db.Inventories.Any(i => i.ProductVariantId == v.Id && i.SellerId == s.Id && i.AvailableQuantity >= c.CommittedQuantity)
+                   && (p.ProductType != ProductType.Physical || db.Inventories.Any(i => i.ProductVariantId == v.Id && i.SellerId == s.Id && i.AvailableQuantity >= c.CommittedQuantity))
                    && c.ReservedQuantity + (orders.Where(o => o.CampaignId == c.Id && o.ExpiresAtUtc > now
                        && (o.State == PaymentState.Creating || o.State == PaymentState.Pending || o.State == PaymentState.Authorized)).Sum(o => (decimal?)o.Quantity) ?? 0)
                        + c.MinimumReservationQuantity <= c.TargetQuantity
@@ -69,6 +70,7 @@ public sealed class DiscoveryQueries(MarketplaceDb db, IConfiguration config, Ti
                    && (query == null || c.Title.ToLower().Contains(query) || p.Name.ToLower().Contains(query))
                select new DealRow
                {
+                   ProductType = p.ProductType,
                    Id = c.Id,
                    ProductId = p.Id,
                    CategoryId = p.CategoryId,
@@ -161,7 +163,7 @@ public sealed class DiscoveryQueries(MarketplaceDb db, IConfiguration config, Ti
                 reference.HasValue ? decimal.Round((reference.Value - price) / reference.Value * 100, 2) : null,
                 r.PaidQuantity, prices[0].Quantity, r.Target, next?.Quantity, next?.UnitPrice,
                 Math.Min(100, decimal.Round(r.PaidQuantity / prices[0].Quantity * 100, 2)), r.Status, r.Published,
-                r.Ends, r.ServiceArea, location.DisplayName!, true, delivery);
+                r.Ends, r.ServiceArea, location.DisplayName!, true, delivery && r.ProductType == ProductType.Physical);
         }).ToArray();
     }
 }

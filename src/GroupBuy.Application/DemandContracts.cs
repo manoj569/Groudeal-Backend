@@ -12,12 +12,13 @@ public record DemandParticipation(bool Joined, decimal? Quantity, string? Unit, 
     DateTimeOffset? JoinedAtUtc, DateTimeOffset? UpdatedAtUtc, bool CanWithdraw);
 public record DemandDetail(Guid DemandId, DemandType DemandType, string Title, DemandCategory? Category, DemandProduct? Product,
     string ServiceArea, string? Locality, DemandStatus Status, DemandProgress Progress, DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc, DemandParticipation? Membership)
+    DateTimeOffset UpdatedAtUtc, DemandParticipation? Membership, int ActiveOfferCount = 0)
 {
     public bool IsFree => true;
     public bool GuaranteesFulfillment => false;
-    public string SellerOpportunityState => "NotStarted";
-    public string Message => Status == DemandStatus.BuildingInterest ? "Building local interest. Seller outreach has not started." : "This demand is no longer accepting interest.";
+    public string SellerOpportunityState => ActiveOfferCount > 0 ? "OffersAvailable" : "NotStarted";
+    public string? GroupDealsRoute => ActiveOfferCount > 0 ? $"/api/v1/group-buys/deals?demandId={DemandId:D}&serviceArea={ServiceArea}" : null;
+    public string Message => Status == DemandStatus.BuildingInterest ? ActiveOfferCount > 0 ? "Seller offers are available. Review an offer before joining a paid group." : "Building local interest. Seller outreach has not started." : "This demand is no longer accepting interest.";
 }
 public record MyDemand(DemandDetail Demand, bool Created, DemandParticipation Participation);
 public record DemandPreview(CreateDemandRequest Normalized, bool SimilarDemandFound, DemandDetail? Demand, bool CanSubmit = true, string? BlockingCode = null);

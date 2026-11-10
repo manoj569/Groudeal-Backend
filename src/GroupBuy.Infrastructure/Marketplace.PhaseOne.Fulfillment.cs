@@ -205,7 +205,7 @@ public sealed partial class Marketplace
     }
     private async Task OpenTierCampaign(Guid id,CancellationToken ct)
     {
-        await using var tx=await db.Database.BeginTransactionAsync(ct);var(_,c)=await LockFinancialCampaign(id,ct);if(c.Status==CampaignStatus.Scheduled && c.StartsAtUtc<=clock.GetUtcNow()){c.Status=CampaignStatus.Open;await db.SaveChangesAsync(ct);}await tx.CommitAsync(ct);
+        await using var tx=await db.Database.BeginTransactionAsync(ct);var(_,c)=await LockFinancialCampaign(id,ct);if(c.Status==CampaignStatus.Scheduled && c.StartsAtUtc<=clock.GetUtcNow()){c.TransitionTo(CampaignStatus.Open); if(c.ExpiresAtUtc>clock.GetUtcNow())await NotifyDemandOffer(c,ct);Audit(null,"CampaignOpened",c);await db.SaveChangesAsync(ct);}await tx.CommitAsync(ct);
     }
     private async Task ExpireFulfillment(Guid id,CancellationToken ct)
     {
@@ -215,7 +215,12 @@ public sealed partial class Marketplace
     }
     private async Task ConsumeFinancialStock(OrderFulfillment f,PaymentOrder o,GroupBuyCampaign c,CancellationToken ct)
     {
-        Require(f.SellerHandedOverAtUtc is null,"Seller handover already recorded.");var inventory=await db.Inventories.SingleAsync(i=>i.ProductVariantId==c.ProductVariantId,ct);await db.Entry(inventory).ReloadAsync(ct);
+        Require(f.SellerHandedOverAtUtc is null,"Seller handover already recorded.");
+        if (!await PhysicalVariant(c.ProductVariantId,ct))
+        {
+            Require(c.CommittedQuantity>=o.Quantity,"Committed capacity unavailable.");c.CommittedQuantity-=o.Quantity;c.FulfilledQuantity+=o.Quantity;f.SellerHandedOverAtUtc=clock.GetUtcNow();Audit(null,"SellerEntitlementRedeemed",f);return;
+        }
+        var inventory=await db.Inventories.SingleAsync(i=>i.ProductVariantId==c.ProductVariantId,ct);await db.Entry(inventory).ReloadAsync(ct);
         Require(inventory.AvailableQuantity>=o.Quantity && c.CommittedQuantity>=o.Quantity,"Committed inventory unavailable.");inventory.AvailableQuantity-=o.Quantity;inventory.Version++;inventory.UpdatedAt=clock.GetUtcNow();c.CommittedQuantity-=o.Quantity;c.FulfilledQuantity+=o.Quantity;f.SellerHandedOverAtUtc=clock.GetUtcNow();Audit(null,"SellerStockHandedOver",f);
     }
     private async Task ProcessWebhook(Guid id,CancellationToken ct)

@@ -57,6 +57,8 @@ public sealed partial class Marketplace : IPhaseOne
     {
         if (request.Tiers is null) throw new BusinessException(400, "invalid_tiers", "Configure ordered price tiers.");
         Pilot(); _ = Area(request.ServiceArea); await using var tx = await db.Database.BeginTransactionAsync(ct); var s = await OwnedSeller(actor, ct); await LockSeller(s.Id, ct); var c = await LockCampaign(id, ct); Require(c.SellerId == s.Id, "Resource not found.", 404); Require(c.Status == CampaignStatus.Draft, "Tiers are immutable after submission.");
+        if (!await PhysicalVariant(c.ProductVariantId, ct)) Require(request.Tiers.All(t => t.Quantity == decimal.Truncate(t.Quantity)), "Entitlement tier thresholds must be whole members.", 400);
+        Require(c.OriginatingDemandId is null || request.NearTargetQuantity is null, "Demand offers require exact tier thresholds.", 400);
         TierPricing.Validate(request.Tiers.Select(t => (t.Quantity, t.UnitPrice)).ToList(), c.TargetQuantity, c.ReferenceUnitPrice);
         Require(request.NearTargetQuantity is null || (request.NearTargetQuantity >= request.Tiers[0].Quantity * .9m && request.NearTargetQuantity < request.Tiers[0].Quantity && decimal.Round(request.NearTargetQuantity.Value, 3) == request.NearTargetQuantity), "Near-target threshold must be at least 90% of minimum.", 400);
         db.PriceTiers.RemoveRange(await db.PriceTiers.Where(t => t.CampaignId == id).ToListAsync(ct)); foreach (var t in request.Tiers) db.PriceTiers.Add(new() { CampaignId = id, Quantity = t.Quantity, UnitPrice = t.UnitPrice });
@@ -94,11 +96,20 @@ public sealed partial class Marketplace : IPhaseOne
             if (previous is not null) { Require(previous.Quantity == request.Quantity && previous.FulfillmentMode == request.FulfillmentMode && previous.AddressDigest == digest, "Idempotency key payload changed."); orderId = previous.Id; }
             else
             {
-                var now = clock.GetUtcNow(); Require(Eligible(s) && FinancialOpen(c) && c.StartsAtUtc <= now && c.ExpiresAtUtc > now, "Campaign is not accepting payments."); await CheckOperationalResources(s, c, ct); _ = Area(c.ServiceArea);
+                var now = clock.GetUtcNow();
+                if (c.OriginatingDemandId is not null || !await PhysicalVariant(c.ProductVariantId, ct))
+                {
+                    _ = SupportedDealArea(c.ServiceArea);
+                    Require(!await db.PaymentOrders.AnyAsync(o => o.CampaignId == c.Id && o.CustomerId == actor.UserId &&
+                        ((o.ReservationId != null && db.Reservations.Any(r => r.Id == o.ReservationId && r.Status == ReservationStatus.Active)) ||
+                         ((o.State == PaymentState.Creating || o.State == PaymentState.Pending || o.State == PaymentState.Authorized) && o.ExpiresAtUtc > now)), ct), "Already joined this group deal.");
+                }
+                Require(Eligible(s) && FinancialOpen(c) && c.StartsAtUtc <= now && c.ExpiresAtUtc > now, "Campaign is not accepting payments."); await CheckOperationalResources(s, c, ct); _ = Area(c.ServiceArea);
                 var unit = await db.Variants.Where(v => v.Id == c.ProductVariantId).Select(v => v.UnitOfMeasure).SingleAsync(ct);
                 Require(request.Quantity >= c.MinimumReservationQuantity && request.Quantity <= c.MaximumReservationQuantity && decimal.Round(request.Quantity, 3) == request.Quantity && (unit is not (UnitOfMeasure.Piece or UnitOfMeasure.Pack) || request.Quantity == decimal.Truncate(request.Quantity)), "Invalid reservation quantity.", 400);
                 var holds = await db.PaymentOrders.Where(o => o.CampaignId == c.Id && (o.State == PaymentState.Creating || o.State == PaymentState.Pending || o.State == PaymentState.Authorized) && o.ExpiresAtUtc > now).SumAsync(o => (decimal?)o.Quantity, ct) ?? 0;
                 Require(c.ReservedQuantity + holds + request.Quantity <= c.TargetQuantity && c.CommittedQuantity >= c.ReservedQuantity + holds + request.Quantity, "Campaign capacity is unavailable.");
+                Require(await PhysicalVariant(c.ProductVariantId, ct) || request.FulfillmentMode == OrderFulfillmentMode.SellerPickup, "Services and memberships use seller entitlement redemption; delivery is unavailable.", 400);
                 long fee = 0; if (request.FulfillmentMode == OrderFulfillmentMode.FounderDelivery)
                 {
                     var a = request.Address; Require(a is not null && a.ServiceArea == c.ServiceArea && Area(c.ServiceArea).PostalCodes.Contains(a.PostalCode) && a.Recipient is { Length: >= 1 and <= 100 } && !string.IsNullOrWhiteSpace(a.Recipient) && a.Phone is { Length: >= 8 and <= 16 } && System.Text.RegularExpressions.Regex.IsMatch(a.Phone, "^\\+?[0-9]{8,15}$") && a.Address is { Length: >= 5 and <= 500 } && !string.IsNullOrWhiteSpace(a.Address) && (a.Landmark?.Length ?? 0) <= 200, "Delivery address is outside the configured service area or invalid.", 400);

@@ -77,7 +77,7 @@ public sealed partial class Marketplace
     // Never return arbitrary JSON from historical/operator-written audit rows.
     private static IReadOnlyDictionary<string, string> SafeAuditMetadata(AuditLog row)
     {
-        if (row.Action is not ("SellerApproved" or "SellerRejected" or "CampaignApproved" or "CampaignRejected" or "CampaignFailed")) return new Dictionary<string, string>();
+        if (row.Action is not ("SellerApproved" or "SellerRejected" or "CampaignApproved" or "CampaignRejected" or "CampaignFailed" or "GroupDealCancelled")) return new Dictionary<string, string>();
         try
         {
             using var json = JsonDocument.Parse(row.SafeMetadataJson);

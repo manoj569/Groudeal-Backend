@@ -83,7 +83,8 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
     public async Task<ProductResponse> Product(Guid id, CancellationToken ct) => await ProductDto(await PublicProducts.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw Missing(), ct);
     public async Task<ProductResponse> SaveProduct(Actor actor, Guid? id, ProductRequest request, CancellationToken ct)
     {
-        Validate.With(request, new ProductValidator()); await using var tx = await db.Database.BeginTransactionAsync(ct);
+        Validate.With(request, new ProductValidator());
+        Require(request.ProductType == ProductType.Physical || (request.UnitOfMeasure == UnitOfMeasure.Piece && request.UnitQuantity == 1), "Service and membership catalog units represent one entitlement.", 400); await using var tx = await db.Database.BeginTransactionAsync(ct);
         var seller = await OwnedSeller(actor, ct); seller = await LockSeller(seller.Id, ct, true); Require(Eligible(seller), "Approved seller required.", 403);
         Require(await db.Categories.AnyAsync(x => x.Id == request.CategoryId && x.IsActive, ct), "Active category required.", 400);
         Product p;
@@ -91,6 +92,8 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         else p = await db.Products.SingleOrDefaultAsync(x => x.Id == id && x.SellerId == seller.Id, ct) ?? throw Missing();
         // Existing variants are immutable once referenced: changing units would change campaign meaning.
         var variant = id is null ? null : await db.Variants.SingleOrDefaultAsync(x => x.ProductId == p.Id && x.IsActive, ct);
+        if (variant is not null && p.ProductType != request.ProductType)
+            Require(!await db.Inventories.AnyAsync(i => i.ProductVariantId == variant.Id && i.AvailableQuantity > 0, ct), "Clear physical stock before changing the catalog offer type.");
         if (variant is not null && (variant.UnitOfMeasure != request.UnitOfMeasure || variant.UnitQuantity != request.UnitQuantity))
             Require(!await db.Inventories.AnyAsync(x => x.ProductVariantId == variant.Id && x.AvailableQuantity > 0, ct), "Declare zero inventory before changing variant units.");
         if (variant is not null) Require(!await db.Campaigns.AnyAsync(x => x.ProductVariantId == variant.Id, ct), "Product variants referenced by campaigns cannot be edited.");
@@ -118,11 +121,13 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
     {
         Validate.With(request, new CampaignValidator()); await using var tx = await db.Database.BeginTransactionAsync(ct);
         var own = await OwnedSeller(actor, ct); var s = await LockSeller(own.Id, ct); await ValidateCampaignResources(s, request, ct);
-        Require(await FreeInventory(request.ProductVariantId, ct) >= request.TargetQuantity, "Declare sufficient uncommitted inventory before creating a campaign.");
+        Require(!await PhysicalVariant(request.ProductVariantId, ct) || await FreeInventory(request.ProductVariantId, ct) >= request.TargetQuantity, "Declare sufficient uncommitted inventory before creating a campaign.");
         GroupBuyCampaign c;
         if (id is null) { c = new GroupBuyCampaign { SellerId = s.Id }; db.Campaigns.Add(c); }
         else { c = await LockCampaign(id.Value, ct); Require(c.SellerId == s.Id, "Resource not found.", 404); Require(c.Status == CampaignStatus.Draft, "Only drafts can be edited."); }
         Require(!c.UsesTierPricing, "Configure a new draft before editing tier campaign resources.");
+        if (!await PhysicalVariant(request.ProductVariantId, ct))
+            Require(request.MinimumReservationQuantity == 1 && request.MaximumReservationQuantity == 1, "Service and membership offers use one entitlement per customer.", 400);
         c.ProductVariantId = request.ProductVariantId; c.SellerLocationId = request.SellerLocationId; c.Title = request.Title; c.Description = request.Description;
         c.ReferenceUnitPrice = request.ReferenceUnitPrice; c.GroupUnitPrice = request.GroupUnitPrice; c.TargetQuantity = request.TargetQuantity; c.MinimumReservationQuantity = request.MinimumReservationQuantity; c.MaximumReservationQuantity = request.MaximumReservationQuantity; c.StartsAtUtc = request.StartsAtUtc; c.ExpiresAtUtc = request.ExpiresAtUtc; c.UpdatedAt = clock.GetUtcNow();
         Audit(actor, id is null ? "CampaignCreated" : "CampaignUpdated", c); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return CampaignDto(c);
@@ -131,10 +136,11 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
     {
         await using var tx = await db.Database.BeginTransactionAsync(ct); var own = await OwnedSeller(actor, ct); var seller = await LockSeller(own.Id, ct);
         var c = await LockCampaign(id, ct); Require(c.SellerId == seller.Id, "Resource not found.", 404); Require(Eligible(seller), "Approved seller required.", 403); Require(c.ExpiresAtUtc > clock.GetUtcNow(), "Campaign deadline passed.");
+        if (c.Status == CampaignStatus.PendingApproval) { await tx.CommitAsync(ct); return CampaignDto(c); }
         Require(c.Status == CampaignStatus.Draft, "Only drafts can be submitted.");
-        Require(!config.GetValue("Pilot:Enabled", false) || c.UsesTierPricing, "Pilot campaigns require tiers and paid checkout.");
+        Require((!config.GetValue("Pilot:Enabled", false) && await PhysicalVariant(c.ProductVariantId, ct)) || c.UsesTierPricing, "Pilot campaigns require tiers and paid checkout.");
         await CheckOperationalResources(seller, c, ct);
-        Require(await FreeInventory(c.ProductVariantId, ct) >= c.TargetQuantity, "Insufficient uncommitted inventory.");
+        Require(!await PhysicalVariant(c.ProductVariantId, ct) || await FreeInventory(c.ProductVariantId, ct) >= c.TargetQuantity, "Insufficient uncommitted inventory.");
         c.CommittedQuantity = c.TargetQuantity;
         c.TransitionTo(CampaignStatus.PendingApproval); Audit(actor, "CampaignSubmitted", c); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return CampaignDto(c);
     }
@@ -158,7 +164,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         Validate.With(request, new ReservationValidator()); await using var tx = await db.Database.BeginTransactionAsync(ct);
         var sellerId = await db.Campaigns.Where(x => x.Id == id).Select(x => (Guid?)x.SellerId).SingleOrDefaultAsync(ct) ?? throw Missing();
         var seller = await LockSeller(sellerId, ct); var c = await LockCampaign(id, ct);
-        Require(!c.UsesTierPricing, "Use paid checkout for tier campaigns.");
+        Require(!c.UsesTierPricing && await PhysicalVariant(c.ProductVariantId, ct), "Use paid checkout for tier and nonphysical campaigns.");
         var existing = await db.Reservations.SingleOrDefaultAsync(x => x.CampaignId == id && x.CustomerUserId == actor.UserId && x.IdempotencyKey == request.IdempotencyKey, ct);
         if (existing is not null) { Require(existing.Quantity == request.Quantity, "Idempotency key was used with another quantity."); await tx.CommitAsync(ct); return ReservationDto(existing, c); }
         Require(Eligible(seller), "Seller is unavailable.");
@@ -233,6 +239,7 @@ public sealed partial class Marketplace(MarketplaceDb db, UserManager<IdentityAc
         if (approve) { Require(Eligible(s), "Seller approval required."); Require(c.ExpiresAtUtc > clock.GetUtcNow(), "Campaign deadline passed."); await CheckOperationalResources(s, c, ct); Require(c.CommittedQuantity == c.TargetQuantity, "Submit an inventory-backed campaign first."); }
         else c.CommittedQuantity = 0;
         c.TransitionTo(!approve ? CampaignStatus.Draft : c.StartsAtUtc > clock.GetUtcNow() ? CampaignStatus.Scheduled : CampaignStatus.Open);
+        await NotifyDemandOffer(c, ct);
         Audit(actor, approve ? "CampaignApproved" : "CampaignRejected", c, request.Reason); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return CampaignDto(c);
     }
     public async Task Process(CancellationToken ct)

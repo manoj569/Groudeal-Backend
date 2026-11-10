@@ -4,7 +4,7 @@ public enum AccountStatus { Active, Suspended }
 public enum SellerType { Grocery, Fashion, Electronics, VehicleDealer, PropertyDeveloper, Other }
 public enum VerificationStatus { Pending, Approved, Rejected }
 public enum ResourceStatus { Active, Inactive }
-public enum ProductType { Physical }
+public enum ProductType { Physical, Service, Membership }
 public enum UnitOfMeasure { Kilogram, Litre, Piece, Pack }
 public enum FulfillmentMode { Pickup }
 public enum CampaignStatus { Draft, PendingApproval, Scheduled, Open, TargetReached, AwaitingSellerConfirmation, Confirmed, FulfillmentInProgress, Completed, Expired, Cancelled, Failed, MinimumReached, Finalizing, Successful, Preparing, ReadyForFulfillment }

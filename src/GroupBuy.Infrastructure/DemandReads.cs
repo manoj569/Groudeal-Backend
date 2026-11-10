@@ -60,7 +60,11 @@ public sealed partial class DiscoveryService
         var productIds = rows.Where(d => d.ProductId.HasValue).Select(d => d.ProductId!.Value).Distinct().ToArray();
         var categoryNames = await db.Categories.AsNoTracking().Where(c => categoryIds.Contains(c.Id)).Select(c => new { c.Id, c.Name }).ToDictionaryAsync(c => c.Id, c => c.Name, ct);
         var productNames = await db.Products.AsNoTracking().Where(p => productIds.Contains(p.Id)).Select(p => new { p.Id, p.Name }).ToDictionaryAsync(p => p.Id, p => p.Name, ct);
-        var counts = await db.DiscoveryDemands.AsNoTracking().Where(d => ids.Contains(d.Id)).Select(d => new { d.Id, Count = db.Interests.Where(i => i.Active && ((d.ProductId == null && i.DemandId == d.Id) || (d.ProductId != null && i.ProductId == d.ProductId && i.ServiceArea == d.ServiceArea)) && db.UsersProfile.Any(u => u.Id == i.CustomerId && u.Status == AccountStatus.Active)).Select(i => i.CustomerId).Distinct().Count() }).ToDictionaryAsync(d => d.Id, d => d.Count, ct);
+        var publicProducts = PublicCatalog.Products(db); var now = clock.GetUtcNow();
+        var counts = await db.DiscoveryDemands.AsNoTracking().Where(d => ids.Contains(d.Id)).Select(d => new { d.Id, Count = db.Interests.Where(i => i.Active && ((d.ProductId == null && i.DemandId == d.Id) || (d.ProductId != null && i.ProductId == d.ProductId && i.ServiceArea == d.ServiceArea)) && db.UsersProfile.Any(u => u.Id == i.CustomerId && u.Status == AccountStatus.Active)).Select(i => i.CustomerId).Distinct().Count() , Offers = db.Campaigns.Count(c => c.OriginatingDemandId == d.Id && c.UsesTierPricing
+            && (c.Status == CampaignStatus.Open || c.Status == CampaignStatus.MinimumReached) && c.StartsAtUtc <= now && c.ExpiresAtUtc > now
+            && db.Sellers.Any(s => s.Id == c.SellerId && s.Status == ResourceStatus.Active && s.VerificationStatus == VerificationStatus.Approved && db.UsersProfile.Any(u => u.Id == s.OwnerUserId && u.Status == AccountStatus.Active))
+            && db.Variants.Any(v => v.Id == c.ProductVariantId && v.IsActive && publicProducts.Any(p => p.Id == v.ProductId))) }).ToDictionaryAsync(d => d.Id, d => d, ct);
         var members = actor is null ? [] : await db.Interests.AsNoTracking().Where(i => i.CustomerId == actor.UserId && db.DiscoveryDemands.Any(d => ids.Contains(d.Id) && (i.DemandId == d.Id || (d.ProductId != null && i.ProductId == d.ProductId && i.ServiceArea == d.ServiceArea)))).ToListAsync(ct);
         return rows.Select(d =>
         {
@@ -69,7 +73,7 @@ public sealed partial class DiscoveryService
             var location = areas.Resolve(new(ServiceArea: d.ServiceArea));
             return new DemandDetail(d.Id, d.DemandType, d.Title, d.CategoryId.HasValue ? new(d.CategoryId.Value, categoryNames.GetValueOrDefault(d.CategoryId.Value, "")) : null,
                 d.ProductId.HasValue ? new(d.ProductId.Value, productNames.GetValueOrDefault(d.ProductId.Value, "")) : null,
-                d.ServiceArea, location.DisplayName, d.Status, new(counts[d.Id]), d.CreatedAt, d.UpdatedAt, membership);
+                d.ServiceArea, location.DisplayName, d.Status, new(counts[d.Id].Count), d.CreatedAt, d.UpdatedAt, membership, counts.GetValueOrDefault(d.Id)?.Offers ?? 0);
         }).ToArray();
     }
     private static void Admin(Actor actor) { if (!actor.IsAdmin) throw new BusinessException(403, "forbidden", "Administrator access required."); }

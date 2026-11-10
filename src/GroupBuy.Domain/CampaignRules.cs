@@ -7,7 +7,7 @@ public static class CampaignRules
         (CampaignStatus.PendingApproval, CampaignStatus.Draft or CampaignStatus.Scheduled or CampaignStatus.Open or CampaignStatus.Cancelled or CampaignStatus.Expired) => true,
         (CampaignStatus.Scheduled, CampaignStatus.Open or CampaignStatus.Expired or CampaignStatus.Cancelled) => true,
         (CampaignStatus.Open, CampaignStatus.TargetReached or CampaignStatus.Expired or CampaignStatus.Cancelled or CampaignStatus.MinimumReached or CampaignStatus.Finalizing) => true,
-        (CampaignStatus.MinimumReached, CampaignStatus.Open or CampaignStatus.Finalizing) => true,
+        (CampaignStatus.MinimumReached, CampaignStatus.Open or CampaignStatus.Finalizing or CampaignStatus.Cancelled) => true,
         (CampaignStatus.Finalizing, CampaignStatus.Successful or CampaignStatus.Failed) => true,
         (CampaignStatus.Successful, CampaignStatus.Preparing or CampaignStatus.Failed) => true,
         (CampaignStatus.Preparing, CampaignStatus.ReadyForFulfillment or CampaignStatus.Failed) => true,

@@ -543,6 +543,9 @@ namespace GroupBuy.Infrastructure.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<DateTimeOffset?>("DemandOfferNotifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasMaxLength(4000)
@@ -590,6 +593,14 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.Property<decimal?>("NearTargetQuantity")
                         .HasPrecision(18, 3)
                         .HasColumnType("numeric(18,3)");
+
+                    b.Property<string>("OfferTerms")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<Guid?>("OriginatingDemandId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset?>("PickupDeadlineUtc")
                         .HasColumnType("timestamp with time zone");
@@ -660,6 +671,8 @@ namespace GroupBuy.Infrastructure.Migrations
 
                     b.HasIndex("DecisionActorId");
 
+                    b.HasIndex("OriginatingDemandId", "ServiceArea");
+
                     b.HasIndex("SellerId", "Id");
 
                     b.HasIndex("SellerId", "ProductVariantId");
@@ -669,6 +682,8 @@ namespace GroupBuy.Infrastructure.Migrations
                     b.HasIndex("Status", "ConfirmationDeadlineUtc");
 
                     b.HasIndex("Status", "PickupDeadlineUtc");
+
+                    b.HasIndex("OriginatingDemandId", "Status", "Id");
 
                     b.HasIndex("Status", "ExpiresAtUtc", "Id");
 
@@ -1313,7 +1328,10 @@ namespace GroupBuy.Infrastructure.Migrations
 
                     b.HasIndex("Status", "Id");
 
-                    b.ToTable("products", (string)null);
+                    b.ToTable("products", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_product_type", "\"ProductType\" BETWEEN 0 AND 2");
+                        });
                 });
 
             modelBuilder.Entity("GroupBuy.Domain.ProductVariant", b =>
@@ -2048,6 +2066,12 @@ namespace GroupBuy.Infrastructure.Migrations
                         .HasForeignKey("SellerId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("GroupBuy.Domain.DiscoveryDemand", null)
+                        .WithMany()
+                        .HasForeignKey("OriginatingDemandId", "ServiceArea")
+                        .HasPrincipalKey("Id", "ServiceArea")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("GroupBuy.Domain.ProductVariant", null)
                         .WithMany()
