@@ -34,7 +34,8 @@ public partial class BackendTests
                 var c=new GroupBuyCampaign { SellerId=template.SellerId,ProductVariantId=template.ProductVariantId,SellerLocationId=template.SellerLocationId,
                     Title="History "+status,ReferenceUnitPrice=100,GroupUnitPrice=80,TargetQuantity=30,CommittedQuantity=30,ReservedQuantity=1,
                     MinimumReservationQuantity=1,MaximumReservationQuantity=30,StartsAtUtc=instant.AddDays(-1),ExpiresAtUtc=instant.AddDays(1),
-                    Status=status==ParticipationStatus.Confirmed ? CampaignStatus.Successful : CampaignStatus.Open,
+                    Status=status is ParticipationStatus.Confirmed or ParticipationStatus.Ready ? CampaignStatus.Successful : CampaignStatus.Open,
+                    FinalizedAtUtc=status==ParticipationStatus.Ready ? instant : null,
                     UsesTierPricing=true,ServiceArea="unconfigured-history" };
                 db.Campaigns.Add(c);
                 GroupBuyReservation? r=null;
@@ -48,13 +49,13 @@ public partial class BackendTests
                     CreatedAt=instant,UpdatedAt=instant,ExpiresAtUtc=instant.AddDays(1),CapturedAtUtc=r==null ? null : instant,
                     IdempotencyKey=Guid.NewGuid().ToString("N"),State=status==ParticipationStatus.PaymentPending ? PaymentState.Authorized :
                         status==ParticipationStatus.PaymentFailed ? PaymentState.Failed : status==ParticipationStatus.Refunded ? PaymentState.Refunded : PaymentState.Captured,
-                    RefundedMinor=status==ParticipationStatus.Refunded ? 8000 : 0,FinalAmountMinor=status is ParticipationStatus.Cancelled or ParticipationStatus.Refunded ? 0 : null };
+                    RefundedMinor=status==ParticipationStatus.Refunded ? 8000 : 0,FinalAmountMinor=status is ParticipationStatus.Cancelled or ParticipationStatus.Refunded ? 0 : status==ParticipationStatus.Ready ? 8000 : null };
                 db.PaymentOrders.Add(o); expected[status]=o.Id;
                 if(status is ParticipationStatus.Ready or ParticipationStatus.Completed) {
                     var p=new PickupRecord { CampaignId=c.Id,ReservationId=r!.Id,SellerId=c.SellerId,CustomerUserId=x.CustomerId,
                         DeadlineUtc=instant.AddDays(1),Status=status==ParticipationStatus.Completed ? PickupStatus.Collected : PickupStatus.ReadyForPickup,
                         CollectedAtUtc=status==ParticipationStatus.Completed ? instant : null,CollectedByUserId=status==ParticipationStatus.Completed ? x.CustomerId : null };
-                    db.Pickups.Add(p); db.OrderFulfillments.Add(new() { PaymentOrderId=o.Id,PickupId=p.Id,
+                    db.Pickups.Add(p); db.OrderFulfillments.Add(new() { PaymentOrderId=o.Id,PickupId=p.Id,ChoiceConfirmed=true,
                         State=status==ParticipationStatus.Completed ? FulfillmentState.Delivered : FulfillmentState.ReadyForCollection,
                         RedeemedAtUtc=status==ParticipationStatus.Completed ? instant : null });
                 }

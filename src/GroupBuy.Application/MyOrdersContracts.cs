@@ -8,7 +8,7 @@ public record MyOrderMoney(string Currency, decimal UnitPriceSnapshot, long Quot
     long? MaximumInitialAmountMinor,long? PaidAmountMinor,long? AuthorizedAmountMinor,long? FinalAmountMinor,
     long DeliveryFeeMinor,long? RefundedMinor,string RefundStatus);
 public record MyOrderFulfillment(Guid? Id, Guid? PickupId, string Kind, FulfillmentState? State, PickupStatus? PickupStatus,
-    bool Ready, bool CanRequestPass, DateTimeOffset? PassRequestAvailableAtUtc,DateTimeOffset? DeadlineUtc,DateTimeOffset? CompletedAtUtc);
+    bool Ready, bool CanRequestPass, DateTimeOffset? PassRequestAvailableAtUtc,DateTimeOffset? DeadlineUtc,DateTimeOffset? CompletedAtUtc,string? Status = null);
 public record MyOrderCard(Guid Id,string Reference,string Source,Guid DealId,string Title,CheckoutPackage Package,
     string SellerLabel,decimal Quantity,DateTimeOffset CreatedAtUtc,DateTimeOffset? JoinedAtUtc,ParticipationStatus Status,
     ReservationStatus? ReservationStatus,PaymentState? PaymentState,string PaymentStatus,bool ParticipationConfirmed,

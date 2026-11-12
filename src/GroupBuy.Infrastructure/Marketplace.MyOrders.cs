@@ -91,7 +91,12 @@ public sealed partial class Marketplace : IMyOrders
                 (k.PaymentId == null ? !c.UsesTierPricing && s.Status == ResourceStatus.Active && s.VerificationStatus == VerificationStatus.Approved &&
                     db.UsersProfile.Any(u=>u.Id==s.OwnerUserId && u.Status==AccountStatus.Active) &&
                     c.Status == CampaignStatus.FulfillmentInProgress && pickup.Status == PickupStatus.ReadyForPickup :
-                 f != null && f.RedeemedAtUtc == null && (o.FulfillmentMode == OrderFulfillmentMode.SellerPickup ?
+                 f != null && f.ChoiceConfirmed && f.RedeemedAtUtc == null && o.State == PaymentState.Captured && o.FinalAmountMinor > 0 &&
+                    o.RefundedMinor < o.MaximumAmountMinor && c.FinalizedAtUtc != null &&
+                    (c.Status == CampaignStatus.Successful || c.Status == CampaignStatus.Preparing || c.Status == CampaignStatus.ReadyForFulfillment) &&
+                    s.Status == ResourceStatus.Active && s.VerificationStatus == VerificationStatus.Approved &&
+                    db.UsersProfile.Any(u=>u.Id==s.OwnerUserId && u.Status==AccountStatus.Active) &&
+                    (o.FulfillmentMode == OrderFulfillmentMode.SellerPickup ?
                     f.State == FulfillmentState.ReadyForCollection : f.State == FulfillmentState.OutForDelivery))
             select new OrderRow {
                 Id=k.Id,CampaignId=c.Id,PaymentId=k.PaymentId,ProductId=p.Id,VariantId=v.Id,Title=c.Title,Product=p.Name,
@@ -217,7 +222,7 @@ public sealed partial class Marketplace : IMyOrders
             new(r.CampaignState,r.Target,progress,r.FinalPrice ?? progress.CurrentTier?.UnitPrice ?? orderedTiers.FirstOrDefault()?.UnitPrice ?? r.GroupPrice,r.FinalPrice,finalTier,r.Ends,r.Finalized),
             new("INR",r.UnitPrice,TierPricing.Minor(r.QuotedSubtotal),r.Maximum,r.Captured!=null ? r.Maximum : null,
                 r.PaymentState==PaymentState.Authorized ? r.Maximum : null,r.Final,r.Fee,r.Refunded,refund),
-            new(r.FulfillmentId,r.Type==ProductType.Physical ? r.PickupId : null,kind,r.FulfillmentState,r.Type==ProductType.Physical ? r.PickupState : null,r.Ready,canPass,available,r.Deadline,r.CompletedAt),
+            new(r.FulfillmentId,r.Type==ProductType.Physical && r.Mode!=OrderFulfillmentMode.FounderDelivery ? r.PickupId : null,kind,r.FulfillmentState,r.Type==ProductType.Physical && r.Mode!=OrderFulfillmentMode.FounderDelivery ? r.PickupState : null,r.Ready,canPass,available,r.Deadline,r.CompletedAt,r.FulfillmentState is {} fulfillmentState ? FulfillmentRules.Status(r.Type,r.Mode ?? OrderFulfillmentMode.SellerPickup,fulfillmentState) : null),
             r.CanCancel,action,now);
     }
 }

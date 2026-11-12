@@ -17,7 +17,10 @@ public record RescueRequest(string Action,DateTimeOffset? NewDeadlineUtc,string 
 public record FulfillmentAction(FulfillmentState State,string? Reason);
 public record SecretRequest(string Secret);
 public record FulfillmentPass(string OpaqueToken,string BackupCode,DateTimeOffset ExpiresAtUtc,int Version);
-public record FulfillmentResponse(Guid Id,Guid PaymentOrderId,Guid CampaignId,string ProductName,decimal Quantity,string SellerName,OrderFulfillmentMode Mode,FulfillmentState State,bool ChoiceConfirmed,long DeliveryFeeMinor,long? FinalAmountMinor,DateTimeOffset DeadlineUtc,bool Redeemed,DeliveryAddress? DeliveryAddress,string? ExceptionReason);
+public record FulfillmentResponse(Guid Id,Guid PaymentOrderId,Guid CampaignId,string ProductName,decimal Quantity,string SellerName,OrderFulfillmentMode Mode,FulfillmentState State,bool ChoiceConfirmed,long DeliveryFeeMinor,long? FinalAmountMinor,DateTimeOffset DeadlineUtc,bool Redeemed,DeliveryAddress? DeliveryAddress,string? ExceptionReason,
+    string Kind = "seller_pickup",string Status = "unavailable",bool CanRequestPass = false,DateTimeOffset? PassAvailableAtUtc = null,
+    string? Instructions = null,DateTimeOffset? CollectedFromSellerAtUtc = null,
+    DateTimeOffset? CompletedAtUtc = null,DateTimeOffset? UpdatedAtUtc = null);
 public record PaymentRefundResponse(Guid Id,Guid PaymentOrderId,string Reason,long AmountMinor,RefundState State,int Attempts,string? ErrorCode);
 public record PilotMetrics(int CampaignsCreated,int MinimumReached,int Successful,int Failed,int Completed,decimal CompletionRate,int InterestedCustomers,int PaidCustomers,decimal InterestConversion,IReadOnlyDictionary<string,int> AchievedTiers,int PendingRefunds,int ExhaustedRefunds);
 public record ProviderOrder(string Id,string Status,long AmountMinor,string Currency);
@@ -58,7 +61,7 @@ public interface IPhaseOne
     Task Cancel(Actor actor,Guid id,CancellationToken ct);
     Task<TierCampaignResponse> Finalize(Actor? actor,Guid id,CancellationToken ct);
     Task<TierCampaignResponse> Rescue(Actor actor,Guid id,RescueRequest request,CancellationToken ct);
-    Task<PageResponse<FulfillmentResponse>> Fulfillments(Actor actor,string view,PageRequest page,string? area,Guid? seller,Guid? campaign,FulfillmentState? state,CancellationToken ct);
+    Task<PageResponse<FulfillmentResponse>> Fulfillments(Actor actor,string view,PageRequest page,string? area,Guid? seller,Guid? campaign,FulfillmentState? state,CancellationToken ct,string? kind = null);
     Task<FulfillmentResponse> Fulfillment(Actor actor,Guid id,string view,CancellationToken ct);
     Task<FulfillmentResponse> ConfirmChoice(Actor actor,Guid id,CancellationToken ct);
     Task<FulfillmentResponse> MoveFulfillment(Actor actor,Guid id,FulfillmentAction request,CancellationToken ct);
@@ -66,6 +69,7 @@ public interface IPhaseOne
     Task<FulfillmentResponse> VerifyPass(Actor actor,Guid id,SecretRequest request,CancellationToken ct);
     Task<FulfillmentResponse> VerifyOpaquePass(Actor actor,SecretRequest request,CancellationToken ct);
     Task<FulfillmentResponse> Redeem(Actor actor,Guid id,CancellationToken ct);
+    Task<FulfillmentResponse> Handover(Actor actor,Guid id,SecretRequest request,CancellationToken ct);
     Task FulfillmentRefund(Actor actor,Guid id,string reason,CancellationToken ct);
     Task<PageResponse<PaymentRefundResponse>> Refunds(Actor actor,PageRequest page,CancellationToken ct);
     Task RetryRefund(Actor actor,Guid id,int expectedRetryCount,CancellationToken ct);

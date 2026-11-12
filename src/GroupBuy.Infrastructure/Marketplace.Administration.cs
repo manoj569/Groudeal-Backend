@@ -16,7 +16,7 @@ public sealed partial class Marketplace
             await db.Campaigns.CountAsync(c => c.Status == CampaignStatus.PendingApproval, ct),
             await db.Campaigns.CountAsync(c => c.Status == CampaignStatus.Scheduled || c.Status == CampaignStatus.Open || c.Status == CampaignStatus.TargetReached || c.Status == CampaignStatus.AwaitingSellerConfirmation || c.Status == CampaignStatus.Confirmed || c.Status == CampaignStatus.FulfillmentInProgress, ct),
             await db.Campaigns.CountAsync(c => c.Status == CampaignStatus.AwaitingSellerConfirmation, ct), await db.Campaigns.CountAsync(c => c.Status == CampaignStatus.Expired, ct),
-            await db.Reservations.CountAsync(ct), await db.Pickups.CountAsync(p => p.Status == PickupStatus.Pending || p.Status == PickupStatus.ReadyForPickup, ct));
+            await db.Reservations.CountAsync(ct), await PhysicalPickupRows.CountAsync(p => p.Status == PickupStatus.Pending || p.Status == PickupStatus.ReadyForPickup, ct));
     }
     private async Task<AdminSellerResponse> AdminSellerDto(Seller s, CancellationToken ct) => new(s.Id, s.OwnerUserId, s.BusinessName, s.SellerType, s.VerificationStatus, s.Status, s.ContactEmail, s.ContactPhone, s.FssaiRegistrationNumber, s.ReviewedAt,
         await db.Locations.AsNoTracking().Where(l => l.SellerId == s.Id).OrderBy(l => l.Id).Select(l => new PrivateSellerLocationResponse(l.Id, l.AddressLine1, l.AddressLine2, l.Area, l.City, l.State, l.PostalCode, l.Latitude, l.Longitude, l.IsActive, l.IsPickupEnabled)).ToListAsync(ct));
@@ -68,7 +68,7 @@ public sealed partial class Marketplace
     public async Task<PageResponse<AdminPickupResponse>> AdminPickups(Actor actor, PageRequest page, PickupStatus? status, Guid? campaignId, CancellationToken ct)
     {
         Admin(actor); Page(page); Status(status);
-        var q = from p in db.Pickups.AsNoTracking() join r in db.Reservations on p.ReservationId equals r.Id where (status == null || p.Status == status) && (campaignId == null || p.CampaignId == campaignId)
+        var q = from p in PhysicalPickupRows join r in db.Reservations on p.ReservationId equals r.Id where (status == null || p.Status == status) && (campaignId == null || p.CampaignId == campaignId)
             select new { Pickup = p, r.Quantity };
         return new(await q.OrderBy(row => row.Pickup.DeadlineUtc).ThenBy(row => row.Pickup.Id).Skip(page.Offset).Take(page.PageSize)
             .Select(row => new AdminPickupResponse(row.Pickup.Id, row.Pickup.ReservationId, row.Pickup.CampaignId, row.Pickup.SellerId, row.Pickup.Status, row.Quantity, row.Pickup.DeadlineUtc, row.Pickup.CollectedAtUtc)).ToListAsync(ct), page.Page, page.PageSize, await q.CountAsync(ct));

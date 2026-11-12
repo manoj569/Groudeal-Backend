@@ -48,10 +48,11 @@ public static class PhaseOneEndpoints
     private static void MapFulfillment(RouteGroupBuilder group,string view)
     {
         group.MapPost("/fulfillments/verify",(SecretRequest r,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.VerifyOpaquePass(Actor(c),r,ct)).RequireRateLimiting("pickup");
-        group.MapGet("/fulfillments",(int? page,int? pageSize,string? area,Guid? seller,Guid? campaign,FulfillmentState? state,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.Fulfillments(Actor(c),view,Page(page,pageSize),area,seller,campaign,state,ct));
+        group.MapGet("/fulfillments",(int? page,int? pageSize,string? area,Guid? seller,Guid? campaign,FulfillmentState? state,string? kind,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.Fulfillments(Actor(c),view,Page(page,pageSize),area,seller,campaign,state,ct,kind));
         group.MapGet("/fulfillments/{id:guid}",(Guid id,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.Fulfillment(Actor(c),id,view,ct));
         group.MapPost("/fulfillments/{id:guid}/status",(Guid id,FulfillmentAction r,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.MoveFulfillment(Actor(c),id,r,ct));
         group.MapPost("/fulfillments/{id:guid}/verify",(Guid id,SecretRequest r,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.VerifyPass(Actor(c),id,r,ct)).RequireRateLimiting("pickup");
         group.MapPost("/fulfillments/{id:guid}/redeem",(Guid id,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.Redeem(Actor(c),id,ct)).RequireRateLimiting("pickup");
+        group.MapPost("/fulfillments/{id:guid}/handover",(Guid id,SecretRequest r,HttpContext c,IPhaseOne s,CancellationToken ct)=>s.Handover(Actor(c),id,r,ct)).RequireRateLimiting("pickup");
     }
 }

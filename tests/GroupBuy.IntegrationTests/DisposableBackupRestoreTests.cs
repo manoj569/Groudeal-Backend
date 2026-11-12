@@ -1,5 +1,4 @@
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace GroupBuy.IntegrationTests;
 
@@ -11,7 +10,8 @@ public partial class BackendTests
         var suffix = Guid.NewGuid().ToString("N");
         var source = "s52_backup_src_" + suffix;
         var restored = "s52_backup_restore_" + suffix;
-        var dump = "/tmp/groudeal-sprint52-backup-" + suffix + ".dump";
+        var native = Environment.GetEnvironmentVariable("GROUPBUY_TEST_PG_BIN");
+        var dump = native is null ? "/tmp/groudeal-sprint52-backup-" + suffix + ".dump" : Path.Combine(Path.GetTempPath(),"groudeal-backup-"+suffix+".dump");
         var builder = new NpgsqlConnectionStringBuilder(fixture.Connection) { Database = "postgres", Pooling = false };
         await using var admin = new NpgsqlConnection(builder.ConnectionString);
         await admin.OpenAsync();
@@ -28,11 +28,11 @@ public partial class BackendTests
             }
 
             var username = builder.Username ?? "postgres";
-            await AssertCommandAsync(fixture.Container, "pg_dump", "-U", username, "--no-owner", "--no-privileges", "-Fc", "-f", dump, source);
-            var listing = await fixture.Container.ExecAsync(new List<string> { "pg_restore", "--list", dump });
+            await PgTool("pg_dump", "-U", username, "--no-owner", "--no-privileges", "-Fc", "-f", dump, source);
+            var listing = await PgTool("pg_restore", "--list", dump);
             Assert.Equal(0, listing.ExitCode);
             Assert.Contains("recovery_proof", listing.Stdout, StringComparison.Ordinal);
-            await AssertCommandAsync(fixture.Container, "pg_restore", "-U", username, "--exit-on-error", "-d", restored, dump);
+            await PgTool("pg_restore", "-U", username, "--exit-on-error", "-d", restored, dump);
 
             var restoredBuilder = new NpgsqlConnectionStringBuilder(builder.ConnectionString) { Database = restored };
             await using var check = new NpgsqlConnection(restoredBuilder.ConnectionString);
@@ -48,13 +48,33 @@ public partial class BackendTests
             await dropRestored.ExecuteNonQueryAsync();
             await using var dropSource = new NpgsqlCommand($"DROP DATABASE IF EXISTS {source} WITH (FORCE)", admin);
             await dropSource.ExecuteNonQueryAsync();
-            _ = await fixture.Container.ExecAsync(new List<string> { "rm", "-f", dump });
+            if(native is null) _ = await fixture.Container.ExecAsync(new List<string> { "rm", "-f", dump });
+            else if(File.Exists(dump)) File.Delete(dump);
+        }
+
+        async Task<(long ExitCode,string Stdout)> PgTool(string tool,params string[] args)
+        {
+            if(native is null)
+            {
+                var result=await fixture.Container.ExecAsync(new[]{tool}.Concat(args).ToList());
+                Assert.Equal(0,result.ExitCode);return(result.ExitCode ?? -1,result.Stdout);
+            }
+            // An explicit test-only path enables the identical backup/restore proof
+            // on a fresh native PostgreSQL cluster. Never invoke a shell or log credentials.
+            DatabaseFixture.ValidateAdminConnectionIsolated(builder.ConnectionString);
+            Assert.True(builder.Host is "127.0.0.1" or "localhost" or "::1");
+            var start=new System.Diagnostics.ProcessStartInfo(Path.Combine(native,tool+(OperatingSystem.IsWindows()?".exe":""))) {
+                UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true };
+            foreach(var argument in args)start.ArgumentList.Add(argument);
+            start.Environment["PGHOST"]=builder.Host;start.Environment["PGPORT"]=builder.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            start.Environment["PGUSER"]=builder.Username;start.Environment["PGPASSWORD"]=builder.Password;
+            using var process=System.Diagnostics.Process.Start(start)!;
+            var output=process.StandardOutput.ReadToEndAsync();var error=process.StandardError.ReadToEndAsync();
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            try { await process.WaitForExitAsync(timeout.Token); }
+            catch(OperationCanceledException){process.Kill(entireProcessTree:true);throw;}
+            await error;Assert.Equal(0,process.ExitCode);return(process.ExitCode,await output);
         }
     }
 
-    private static async Task AssertCommandAsync(PostgreSqlContainer container, params string[] arguments)
-    {
-        var result = await container.ExecAsync(arguments.ToList());
-        Assert.True(result.ExitCode == 0, "Disposable backup command failed; output withheld.");
-    }
 }

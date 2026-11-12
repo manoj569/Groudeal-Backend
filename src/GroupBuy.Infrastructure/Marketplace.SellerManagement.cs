@@ -65,7 +65,7 @@ public sealed partial class Marketplace
 
     public async Task<PickupDetailResponse> SellerPickup(Actor actor, Guid id, CancellationToken ct)
     {
-        var pickup = await db.Pickups.AsNoTracking().SingleOrDefaultAsync(p => p.Id == id && db.Sellers.Any(s => s.Id == p.SellerId && s.OwnerUserId == actor.UserId), ct) ?? throw Missing();
+        var pickup = await PhysicalPickupRows.SingleOrDefaultAsync(p => p.Id == id && db.Sellers.Any(s => s.Id == p.SellerId && s.OwnerUserId == actor.UserId), ct) ?? throw Missing();
         // Reuse the allowlisted operational DTO; never serialize the record with code/attempt/customer fields.
         return await PickupDto(pickup, ct);
     }

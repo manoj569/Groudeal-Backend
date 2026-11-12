@@ -39,7 +39,7 @@ public partial class BackendTests
         await using var seed=f.Services.CreateAsyncScope(); var db=seed.ServiceProvider.GetRequiredService<MarketplaceDb>();
         var fulfillment=await db.OrderFulfillments.SingleAsync(o=>o.PaymentOrderId==order.Id);
         var pickup=await db.Pickups.SingleAsync(p=>p.Id==fulfillment.PickupId);
-        fulfillment.State=FulfillmentState.ReadyForCollection; await db.SaveChangesAsync();
+        fulfillment.ChoiceConfirmed=true;fulfillment.State=FulfillmentState.ReadyForCollection; await db.SaveChangesAsync();
         async Task<MyOrderCard> Card()=> (await Read<MyOrderDetail>(await customer.GetAsync($"/api/v1/me/orders/{order.Id}"))).Order;
         var card=await Card(); Assert.Equal(ParticipationStatus.Ready,card.Status);
         Assert.Equal(type==ProductType.Physical ? "seller_pickup" : "seller_redemption",card.Fulfillment.Kind);

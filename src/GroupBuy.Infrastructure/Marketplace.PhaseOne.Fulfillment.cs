@@ -25,6 +25,9 @@ public sealed partial class Marketplace
         if(!Eligible(s) || !await db.UsersProfile.AnyAsync(u=>u.Id==s.OwnerUserId && u.Status==AccountStatus.Active,ct))achieved=null;
         c.TransitionTo(CampaignStatus.Finalizing);c.FinalUnitPrice=achieved;c.FinalQuantity=c.ReservedQuantity;c.FinalizedAtUtc=now;c.TransitionTo(achieved is null?CampaignStatus.Failed:CampaignStatus.Successful);c.PickupDeadlineUtc=now.AddDays(2);c.UpdatedAt=now;
         var orders=await db.PaymentOrders.Where(o=>o.CampaignId==id && o.ReservationId!=null && o.CapturedAtUtc!=null && o.FinalAmountMinor==null).ToListAsync(ct);
+        var location=await db.Locations.SingleAsync(l=>l.Id==c.SellerLocationId,ct);
+        var physical=await PhysicalVariant(c.ProductVariantId,ct);
+        var pickupInstructions=$"Collect from {s.BusinessName}: {location.AddressLine1}, {location.AddressLine2}, {location.Area}, {location.City}, {location.State} {location.PostalCode}. Present your one-time pickup pass only at handover.";
         var notified=new HashSet<Guid>();
         foreach(var o in orders)
         {
@@ -33,7 +36,7 @@ public sealed partial class Marketplace
             QueueRefund(o,achieved is null?"minimum_not_reached":"tier_difference",o.MaximumAmountMinor-o.FinalAmountMinor.Value);
             if(achieved is null){r.Status=ReservationStatus.Expired;if(notified.Add(o.CustomerId))Notify(o.CustomerId,NotificationType.PilotCampaignFailed,c.Id);continue;}
             r.UnitPriceSnapshot=achieved.Value;r.TotalPriceSnapshot=decimal.Round(achieved.Value*r.Quantity,2,MidpointRounding.AwayFromZero);
-            var pickup=new PickupRecord{ReservationId=r.Id,CampaignId=id,SellerId=c.SellerId,CustomerUserId=o.CustomerId,DeadlineUtc=c.PickupDeadlineUtc.Value,Status=PickupStatus.Pending,PaymentPolicy=PickupPaymentPolicy.VerifiedCapturedPayment};db.Pickups.Add(pickup);
+            var pickup=new PickupRecord{ReservationId=r.Id,CampaignId=id,SellerId=c.SellerId,CustomerUserId=o.CustomerId,DeadlineUtc=c.PickupDeadlineUtc.Value,Status=PickupStatus.Pending,PaymentPolicy=PickupPaymentPolicy.VerifiedCapturedPayment,Instructions=physical && o.FulfillmentMode==OrderFulfillmentMode.SellerPickup ? pickupInstructions : ""};db.Pickups.Add(pickup);
             db.OrderFulfillments.Add(new(){PaymentOrderId=o.Id,PickupId=pickup.Id,State=FulfillmentState.CampaignConfirmed});
             if(notified.Add(o.CustomerId))Notify(o.CustomerId,NotificationType.PilotCampaignFinalized,c.Id);
         }
@@ -62,44 +65,38 @@ public sealed partial class Marketplace
         Require(view switch{"admin"=>a.IsAdmin,"seller"=>s.OwnerUserId==a.UserId && Eligible(s),"customer"=>o.CustomerId==a.UserId,_=>false},"Resource not found.",404);
         var p=await db.Pickups.SingleAsync(p=>p.Id==f.PickupId,ct);return(f,o,p,c,s);
     }
-    private async Task<FulfillmentResponse> FulfillmentDto(OrderFulfillment f,PaymentOrder o,PickupRecord p,GroupBuyCampaign c,Seller s,string view,CancellationToken ct)
-    {
-        var variant=await (from v in db.Variants join productRow in db.Products on v.ProductId equals productRow.Id where v.Id==c.ProductVariantId select new{ProductName=productRow.Name,v.VariantName,v.UnitQuantity,v.UnitOfMeasure}).SingleAsync(ct);
-        var product=$"{variant.ProductName} - {variant.VariantName} ({variant.UnitQuantity.ToString(System.Globalization.CultureInfo.InvariantCulture)} {variant.UnitOfMeasure})";
-        DeliveryAddress? address=null;if(view is "admin" or "customer" && o.AddressCiphertext.Length>0)address=JsonSerializer.Deserialize<DeliveryAddress>(protection.CreateProtector("Groudeal.PhaseOne.DeliveryAddress.v1").Unprotect(o.AddressCiphertext));
-        return new(f.Id,o.Id,c.Id,product,o.Quantity,s.BusinessName,o.FulfillmentMode,f.State,f.ChoiceConfirmed,o.DeliveryFeeMinor,o.FinalAmountMinor,p.DeadlineUtc,f.RedeemedAtUtc is not null,address,f.ExceptionReason);
-    }
-    public async Task<FulfillmentResponse> Fulfillment(Actor actor,Guid id,string view,CancellationToken ct){var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,false,ct);return await FulfillmentDto(f,o,p,c,s,view,ct);}
-    public async Task<PageResponse<FulfillmentResponse>> Fulfillments(Actor actor,string view,PageRequest page,string? area,Guid? seller,Guid? campaign,FulfillmentState? state,CancellationToken ct)
-    {
-        Page(page);Guid? owned=null;if(view=="admin")Admin(actor);else if(view=="seller")owned=(await OwnedSeller(actor,ct)).Id;else Require(view=="customer","Invalid fulfillment view.",400);
-        var q=from f in db.OrderFulfillments join o in db.PaymentOrders on f.PaymentOrderId equals o.Id join c in db.Campaigns on o.CampaignId equals c.Id where (view!="customer" || o.CustomerId==actor.UserId) && (owned==null || c.SellerId==owned) && (area==null || c.ServiceArea==area) && (seller==null || c.SellerId==seller) && (campaign==null || c.Id==campaign) && (state==null || f.State==state) select f;
-        var rows=await q.OrderBy(f=>f.CreatedAt).ThenBy(f=>f.Id).Skip(page.Offset).Take(page.PageSize).Select(f=>f.Id).ToListAsync(ct);var result=new List<FulfillmentResponse>();foreach(var id in rows)result.Add(await Fulfillment(actor,id,view,ct));return new(result,page.Page,page.PageSize,await q.CountAsync(ct));
-    }
     public async Task<FulfillmentResponse> ConfirmChoice(Actor actor,Guid id,CancellationToken ct)
     {
-        await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,"customer",true,ct);Require(f.State==FulfillmentState.CampaignConfirmed && p.DeadlineUtc>clock.GetUtcNow(),"Fulfillment choice cannot be confirmed.");f.ChoiceConfirmed=true;Audit(actor,"FulfillmentChoiceConfirmed",f);await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,"customer",ct);
+        await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,"customer",true,ct);await RequireFulfillable(f,o,p,c,s,ct);Require(f.State==FulfillmentState.CampaignConfirmed && p.DeadlineUtc>clock.GetUtcNow(),"Fulfillment choice cannot be confirmed.");f.ChoiceConfirmed=true;Audit(actor,"FulfillmentChoiceConfirmed",f);await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,"customer",ct);
     }
     public async Task<FulfillmentResponse> MoveFulfillment(Actor actor,Guid id,FulfillmentAction request,CancellationToken ct)
     {
         var view=actor.IsAdmin?"admin":"seller";await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,true,ct);
-        Require(f.ChoiceConfirmed && p.DeadlineUtc>clock.GetUtcNow() && TierPricing.CanFulfill(f.State,request.State,o.FulfillmentMode),"Invalid fulfillment transition.");
-        Require(!await db.PaymentRefunds.AnyAsync(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed,ct),"Refund settlement is pending.");
-        if(request.State is FulfillmentState.CollectedFromSeller or FulfillmentState.OutForDelivery or FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired or FulfillmentState.RefundRequired)Admin(actor);
+        await RequireFulfillable(f,o,p,c,s,ct);
+        Require(f.ChoiceConfirmed && p.DeadlineUtc>clock.GetUtcNow(),"Invalid fulfillment transition.");
+        if(FulfillmentRules.DeliveryOperation(request.State))Admin(actor);
         Require(request.Reason is null || request.Reason.Length<=300,"Reason too long.",400);
+        if(request.State==FulfillmentState.DeliveryFailed)Require(FulfillmentRules.FailureReason(request.Reason),"Choose a supported delivery failure reason.",400);
+        else Require(request.Reason is null,"This transition does not accept a reason.",400);
+        if(f.State==request.State){await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,view,ct);}
+        Require(TierPricing.CanFulfill(f.State,request.State,o.FulfillmentMode),"Invalid fulfillment transition.");
+        Require(!await db.PaymentRefunds.AnyAsync(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed,ct),"Refund settlement is pending.");
         if(request.State==FulfillmentState.CollectedFromSeller)await ConsumeFinancialStock(f,o,c,ct);
+        InvalidateFulfillmentPass(f);
         f.State=request.State;f.ExceptionReason=request.Reason;f.UpdatedAt=clock.GetUtcNow();
         if(f.State==FulfillmentState.Preparing && c.Status==CampaignStatus.Successful)c.TransitionTo(CampaignStatus.Preparing);
-        if(f.State==FulfillmentState.ReadyForCollection){p.Status=PickupStatus.ReadyForPickup;Notify(o.CustomerId,NotificationType.PilotFulfillmentReady,f.Id);}
-        if(f.State==FulfillmentState.OutForDelivery && !await db.Notifications.AnyAsync(n=>n.RecipientUserId==o.CustomerId && n.Type==NotificationType.PilotOutForDelivery && n.EntityId==f.Id,ct))Notify(o.CustomerId,NotificationType.PilotOutForDelivery,f.Id);
+        if(f.State==FulfillmentState.ReadyForCollection){p.Status=PickupStatus.ReadyForPickup;NotifyFulfillment(o.CustomerId,NotificationType.PilotFulfillmentReady,f);}
+        if(f.State==FulfillmentState.DeliveryFailed)NotifyFulfillment(o.CustomerId,NotificationType.DeliveryFailed,f);
+        if(f.State==FulfillmentState.RescheduleRequired)NotifyFulfillment(o.CustomerId,NotificationType.DeliveryRescheduled,f);
+        if(f.State==FulfillmentState.OutForDelivery)NotifyFulfillment(o.CustomerId,NotificationType.PilotOutForDelivery,f);
         Audit(actor,"Fulfillment"+request.State,f);await db.SaveChangesAsync(ct);
         if(c.Status==CampaignStatus.Preparing && !await db.OrderFulfillments.AnyAsync(x=>db.PaymentOrders.Any(y=>y.Id==x.PaymentOrderId && y.CampaignId==c.Id) && (x.State==FulfillmentState.CampaignConfirmed || x.State==FulfillmentState.Preparing),ct))c.TransitionTo(CampaignStatus.ReadyForFulfillment);
         await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,view,ct);
     }
     public async Task<FulfillmentPass> IssuePass(Actor actor,Guid id,CancellationToken ct)
     {
-        await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,_,_)=await FinancialFulfillment(id,actor,"customer",true,ct);var now=clock.GetUtcNow();
-        Require(f.RedeemedAtUtc is null && p.DeadlineUtc>now && (o.FulfillmentMode==OrderFulfillmentMode.SellerPickup?f.State==FulfillmentState.ReadyForCollection:f.State==FulfillmentState.OutForDelivery),"Pass is unavailable.");
+        await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,"customer",true,ct);await RequireFulfillable(f,o,p,c,s,ct);var now=clock.GetUtcNow();
+        Require(f.ChoiceConfirmed && f.RedeemedAtUtc is null && p.DeadlineUtc>now && FulfillmentRules.PassReady(f.State,o.FulfillmentMode),"Pass is unavailable.");
         Require(f.SecretIssuedAtUtc is null || f.SecretIssuedAtUtc<=now.AddMinutes(-1),"Wait before regenerating the pass.",429);Require(f.LockedUntilUtc is null || f.LockedUntilUtc<=now,"Pass verification is locked.",429);
         var token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));var code=RandomNumberGenerator.GetInt32(100000,1000000).ToString(System.Globalization.CultureInfo.InvariantCulture);f.CodeVersion++;f.TokenHash=Digest(token);f.BackupCodeHash=PassHash(f,code);f.SecretIssuedAtUtc=now;f.SecretExpiresAtUtc=now.AddMinutes(10)<p.DeadlineUtc?now.AddMinutes(10):p.DeadlineUtc;f.VerifiedBy=null;f.VerifiedUntilUtc=null;
         // Regeneration never clears failed attempts or a lockout.
@@ -119,32 +116,74 @@ public sealed partial class Marketplace
         var hash=Digest(request.Secret);var id=await (from f in db.OrderFulfillments join o in db.PaymentOrders on f.PaymentOrderId equals o.Id join c in db.Campaigns on o.CampaignId equals c.Id join s in db.Sellers on c.SellerId equals s.Id where f.TokenHash==hash && (actor.IsAdmin || s.OwnerUserId==actor.UserId) select (Guid?)f.Id).SingleOrDefaultAsync(ct)??throw Missing();
         return await VerifyPass(actor,id,request,ct);
     }
-    public async Task<FulfillmentResponse> VerifyPass(Actor actor,Guid id,SecretRequest request,CancellationToken ct)
+    public Task<FulfillmentResponse> VerifyPass(Actor actor,Guid id,SecretRequest request,CancellationToken ct) => VerifyFulfillment(actor,id,request,false,ct);
+    public Task<FulfillmentResponse> Handover(Actor actor,Guid id,SecretRequest request,CancellationToken ct) => VerifyFulfillment(actor,id,request,true,ct);
+    private async Task<FulfillmentResponse> VerifyFulfillment(Actor actor,Guid id,SecretRequest request,bool complete,CancellationToken ct)
     {
-        Require(request.Secret is {Length:>=6 and <=64},"Invalid pass.",400);var view=actor.IsAdmin?"admin":"seller";await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,true,ct);var now=clock.GetUtcNow();
+        Require(request.Secret is {Length:>=6 and <=64},"Invalid pass.",400);
+        var view=actor.IsAdmin?"admin":"seller";
+        await using var tx=await db.Database.BeginTransactionAsync(ct);
+        var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,true,ct);
         if(o.FulfillmentMode==OrderFulfillmentMode.FounderDelivery)Admin(actor);
-        Require(f.RedeemedAtUtc is null && p.DeadlineUtc>now && (o.FulfillmentMode==OrderFulfillmentMode.SellerPickup?f.State==FulfillmentState.ReadyForCollection:f.State==FulfillmentState.OutForDelivery),"Handover is unavailable.");Require(f.LockedUntilUtc is null || f.LockedUntilUtc<=now,"Pass verification is locked.",429);
+        await RequireFulfillable(f,o,p,c,s,ct);
+        var now=clock.GetUtcNow();
+        Require(f.ChoiceConfirmed && f.RedeemedAtUtc is null && p.DeadlineUtc>now && FulfillmentRules.PassReady(f.State,o.FulfillmentMode),"Handover is unavailable.");
+        Require(f.LockedUntilUtc is null || f.LockedUntilUtc<=now,"Pass verification is locked.",429);
         if(f.LockedUntilUtc<=now){f.FailedAttempts=0;f.LockedUntilUtc=null;}
-        var expected=request.Secret.Length==64?f.TokenHash:f.BackupCodeHash;var hash=request.Secret.Length==64?Digest(request.Secret):PassHash(f,request.Secret);var valid=f.SecretExpiresAtUtc>now && expected is not null && CryptographicOperations.FixedTimeEquals(Convert.FromHexString(expected),Convert.FromHexString(hash));
+        var token=request.Secret.Length==64 && request.Secret.All(Uri.IsHexDigit);
+        var code=request.Secret.Length==6 && request.Secret.All(char.IsAsciiDigit);
+        var expected=token?f.TokenHash:f.BackupCodeHash;
+        var hash=token?Digest(request.Secret):PassHash(f,request.Secret);
+        var valid=(token || code) && f.SecretExpiresAtUtc>now && expected is not null && CryptographicOperations.FixedTimeEquals(Convert.FromHexString(expected),Convert.FromHexString(hash));
         if(!valid){f.FailedAttempts++;if(f.FailedAttempts>=5)f.LockedUntilUtc=now.AddMinutes(15);Audit(actor,"FulfillmentPassRejected",f);await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);throw new BusinessException(400,"invalid_pass","Invalid or expired pass.");}
-        f.VerifiedBy=actor.UserId;f.VerifiedUntilUtc=now.AddMinutes(2)<f.SecretExpiresAtUtc?now.AddMinutes(2):f.SecretExpiresAtUtc;Audit(actor,"FulfillmentPassVerified",f);await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,view,ct);
+        f.VerifiedBy=actor.UserId;f.VerifiedUntilUtc=now.AddMinutes(2)<f.SecretExpiresAtUtc?now.AddMinutes(2):f.SecretExpiresAtUtc;
+        Audit(actor,"FulfillmentPassVerified",f);
+        if(complete)await CompleteFulfillment(actor,f,o,p,c,ct);
+        await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);
+        return await FulfillmentDto(f,o,p,c,s,view,ct);
     }
     public async Task<FulfillmentResponse> Redeem(Actor actor,Guid id,CancellationToken ct)
     {
-        var view=actor.IsAdmin?"admin":"seller";await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,true,ct);var now=clock.GetUtcNow();if(o.FulfillmentMode==OrderFulfillmentMode.FounderDelivery)Admin(actor);
-        Require(f.RedeemedAtUtc is null && f.VerifiedBy==actor.UserId && f.VerifiedUntilUtc>now && f.SecretExpiresAtUtc>now && p.DeadlineUtc>now && (o.FulfillmentMode==OrderFulfillmentMode.SellerPickup?f.State==FulfillmentState.ReadyForCollection:f.State==FulfillmentState.OutForDelivery),"Verify an unused pass before confirming handover.");
-        Require(!await db.PaymentRefunds.AnyAsync(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed,ct),"Refund settlement is pending.");
+        var view=actor.IsAdmin?"admin":"seller";await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,s)=await FinancialFulfillment(id,actor,view,true,ct);
+        if(o.FulfillmentMode==OrderFulfillmentMode.FounderDelivery)Admin(actor);
+        await RequireFulfillable(f,o,p,c,s,ct);
+        await CompleteFulfillment(actor,f,o,p,c,ct);
+        await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,view,ct);
+    }
+    private async Task CompleteFulfillment(Actor actor,OrderFulfillment f,PaymentOrder o,PickupRecord p,GroupBuyCampaign c,CancellationToken ct)
+    {
+        var now=clock.GetUtcNow();
+        Require(f.ChoiceConfirmed && f.RedeemedAtUtc is null && f.VerifiedBy==actor.UserId && f.VerifiedUntilUtc>now && f.SecretExpiresAtUtc>now && p.DeadlineUtc>now && FulfillmentRules.PassReady(f.State,o.FulfillmentMode),"Verify an unused pass before confirming handover.");
         var r=await db.Reservations.SingleAsync(r=>r.Id==o.ReservationId,ct);Require(r.Status==ReservationStatus.Active,"Reservation unavailable.");
         if(o.FulfillmentMode==OrderFulfillmentMode.SellerPickup)await ConsumeFinancialStock(f,o,c,ct);else Require(f.SellerHandedOverAtUtc is not null,"Founder collection must be recorded first.");
         r.Status=ReservationStatus.Completed;p.Status=PickupStatus.Collected;p.CollectedAtUtc=now;p.CollectedByUserId=actor.UserId;
-        f.State=FulfillmentState.Delivered;f.RedeemedAtUtc=now;f.TokenHash=null;f.BackupCodeHash=null;f.VerifiedUntilUtc=null;f.SecretExpiresAtUtc=null;f.UpdatedAt=now;Audit(actor,"FulfillmentRedeemed",f);Notify(o.CustomerId,NotificationType.PilotFulfillmentCompleted,f.Id);
-        await db.SaveChangesAsync(ct);if(!await db.OrderFulfillments.AnyAsync(x=>db.PaymentOrders.Any(y=>y.Id==x.PaymentOrderId && y.CampaignId==c.Id) && x.State!=FulfillmentState.Delivered,ct))c.Status=CampaignStatus.Completed;await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);return await FulfillmentDto(f,o,p,c,s,view,ct);
+        f.State=FulfillmentState.Delivered;f.RedeemedAtUtc=now;
+        InvalidateFulfillmentPass(f);f.UpdatedAt=now;Audit(actor,"FulfillmentRedeemed",f);Notify(o.CustomerId,NotificationType.PilotFulfillmentCompleted,f.Id);
+        await db.SaveChangesAsync(ct);
+        if(!await db.OrderFulfillments.AnyAsync(x=>db.PaymentOrders.Any(y=>y.Id==x.PaymentOrderId && y.CampaignId==c.Id) && x.State!=FulfillmentState.Delivered,ct))c.Status=CampaignStatus.Completed;
+    }
+    private static void InvalidateFulfillmentPass(OrderFulfillment f)
+    {
+        f.CodeVersion++;f.TokenHash=null;f.BackupCodeHash=null;f.SecretExpiresAtUtc=null;f.VerifiedBy=null;f.VerifiedUntilUtc=null;
+        // Do not clear issuance cooldown, failed attempts or verification lock.
+    }
+    private void NotifyFulfillment(Guid customer,NotificationType type,OrderFulfillment f) => db.Notifications.Add(new InternalNotification {
+        RecipientUserId=customer,Type=type,EntityId=f.Id,CreatedAtUtc=clock.GetUtcNow(),
+        DeduplicationKey=$"{type}:{f.Id:N}:{customer:N}:{f.CodeVersion}" });
+    private async Task RequireFulfillable(OrderFulfillment f,PaymentOrder o,PickupRecord p,GroupBuyCampaign c,Seller s,CancellationToken ct)
+    {
+        var reservation=await db.Reservations.Where(r=>r.Id==o.ReservationId).Select(r=>(ReservationStatus?)r.Status).SingleOrDefaultAsync(ct);
+        var outstanding=await db.PaymentRefunds.AnyAsync(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed,ct);
+        Require(reservation is not null && FulfillmentRules.CommercialAllows(c.Status,c.FinalizedAtUtc!=null,o.State,o.CapturedAtUtc!=null,o.FinalAmountMinor,o.MaximumAmountMinor,o.RefundedMinor,reservation.Value,outstanding),"Commercial participation is not eligible for fulfillment.");
+        Require(Eligible(s) && await db.UsersProfile.AnyAsync(u=>u.Id==s.OwnerUserId && u.Status==AccountStatus.Active,ct),"Seller unavailable.");
+        Require(f.RedeemedAtUtc==null && f.State is not (FulfillmentState.Cancelled or FulfillmentState.RefundRequired) && p.DeadlineUtc>clock.GetUtcNow(),"Fulfillment unavailable.");
+        Require(await PhysicalVariant(c.ProductVariantId,ct) || o.FulfillmentMode==OrderFulfillmentMode.SellerPickup,"Service fulfillment uses seller redemption.");
     }
     public async Task FulfillmentRefund(Actor actor,Guid id,string reason,CancellationToken ct)
     {
         Admin(actor);Require(reason is {Length:>=5 and <=300},"A bounded reason is required.",400);await using var tx=await db.Database.BeginTransactionAsync(ct);var(f,o,p,c,_)=await FinancialFulfillment(id,actor,"admin",true,ct);
         if(f.State==FulfillmentState.Cancelled){await tx.CommitAsync(ct);return;}Require(f.RedeemedAtUtc is null && f.State is FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired or FulfillmentState.RefundRequired,"Delivery is not eligible for refund.");
-        var outstanding=await db.PaymentRefunds.Where(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed).SumAsync(r=>(long?)r.AmountMinor,ct)??0;QueueRefund(o,"fulfillment_failed",o.MaximumAmountMinor-o.RefundedMinor-outstanding);o.FinalAmountMinor=0;f.State=FulfillmentState.Cancelled;f.TokenHash=null;f.BackupCodeHash=null;f.ExceptionReason=reason;p.Status=PickupStatus.Cancelled;
+        var outstanding=await db.PaymentRefunds.Where(r=>r.PaymentOrderId==o.Id && r.State!=RefundState.Completed).SumAsync(r=>(long?)r.AmountMinor,ct)??0;QueueRefund(o,"fulfillment_failed",o.MaximumAmountMinor-o.RefundedMinor-outstanding);o.FinalAmountMinor=0;f.State=FulfillmentState.Cancelled;InvalidateFulfillmentPass(f);f.ExceptionReason=reason;p.Status=PickupStatus.Cancelled;
         var r=await db.Reservations.SingleAsync(r=>r.Id==o.ReservationId,ct);r.Status=ReservationStatus.Cancelled;c.ReservedQuantity-=o.Quantity;if(f.SellerHandedOverAtUtc is null)c.CommittedQuantity-=o.Quantity;if(c.Status!=CampaignStatus.Failed)c.TransitionTo(CampaignStatus.Failed);Audit(actor,"FulfillmentRefundRequested",f);await db.SaveChangesAsync(ct);await tx.CommitAsync(ct);
     }
     public async Task<PageResponse<PaymentRefundResponse>> Refunds(Actor actor,PageRequest page,CancellationToken ct)

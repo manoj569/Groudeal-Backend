@@ -155,15 +155,14 @@ public static class TierPricing
     public static long Minor(decimal amount) => checked((long)decimal.Round(amount * 100, 0, MidpointRounding.AwayFromZero));
     public static bool CanFulfill(FulfillmentState from, FulfillmentState to, OrderFulfillmentMode mode) => (from, to) switch
     {
-        (FulfillmentState.Pending, FulfillmentState.CampaignConfirmed) => true,
         (FulfillmentState.CampaignConfirmed, FulfillmentState.Preparing) => true,
         (FulfillmentState.Preparing, FulfillmentState.ReadyForCollection) => true,
         (FulfillmentState.ReadyForCollection, FulfillmentState.CollectedFromSeller) => mode == OrderFulfillmentMode.FounderDelivery,
         (FulfillmentState.CollectedFromSeller, FulfillmentState.OutForDelivery) => mode == OrderFulfillmentMode.FounderDelivery,
-        (FulfillmentState.OutForDelivery, FulfillmentState.DeliveryFailed) => true,
-        (FulfillmentState.DeliveryFailed, FulfillmentState.RescheduleRequired) => true,
-        (FulfillmentState.RescheduleRequired, FulfillmentState.OutForDelivery) => true,
-        (FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired, FulfillmentState.RefundRequired) => true,
+        (FulfillmentState.OutForDelivery, FulfillmentState.DeliveryFailed) => mode == OrderFulfillmentMode.FounderDelivery,
+        (FulfillmentState.DeliveryFailed, FulfillmentState.RescheduleRequired) => mode == OrderFulfillmentMode.FounderDelivery,
+        (FulfillmentState.RescheduleRequired, FulfillmentState.OutForDelivery) => mode == OrderFulfillmentMode.FounderDelivery,
+        (FulfillmentState.DeliveryFailed or FulfillmentState.RescheduleRequired, FulfillmentState.RefundRequired) => mode == OrderFulfillmentMode.FounderDelivery,
         _ => false
     };
 }

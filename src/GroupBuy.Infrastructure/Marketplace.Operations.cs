@@ -80,7 +80,7 @@ public sealed partial class Marketplace
     public async Task<SellerSummaryResponse> SellerSummary(Actor actor, CancellationToken ct)
     {
         var seller = await OwnedSeller(actor, ct); var campaigns = db.Campaigns.Where(c => c.SellerId == seller.Id);
-        var reservations = db.Reservations.Where(r => campaigns.Any(c => c.Id == r.CampaignId)); var pickups = db.Pickups.Where(p => p.SellerId == seller.Id);
+        var reservations = db.Reservations.Where(r => campaigns.Any(c => c.Id == r.CampaignId)); var pickups = PhysicalPickupRows.Where(p => p.SellerId == seller.Id);
         return new(await db.Products.CountAsync(p => p.SellerId == seller.Id, ct),
             await campaigns.CountAsync(c => c.Status == CampaignStatus.Open || c.Status == CampaignStatus.Scheduled || c.Status == CampaignStatus.TargetReached || c.Status == CampaignStatus.AwaitingSellerConfirmation || c.Status == CampaignStatus.Confirmed || c.Status == CampaignStatus.FulfillmentInProgress, ct),
             await campaigns.CountAsync(c => c.Status == CampaignStatus.Draft || c.Status == CampaignStatus.PendingApproval, ct),
@@ -97,7 +97,7 @@ public sealed partial class Marketplace
         Require(await db.Campaigns.AnyAsync(c => c.Id == campaignId && c.SellerId == seller.Id, ct), "Resource not found.", 404);
         var q = db.Reservations.AsNoTracking().Where(r => r.CampaignId == campaignId && (status == null || r.Status == status));
         var items = await (from r in q
-                           join pickup in db.Pickups on r.Id equals pickup.ReservationId into pickups
+                           join pickup in PhysicalPickupRows on r.Id equals pickup.ReservationId into pickups
                            from pickup in pickups.DefaultIfEmpty()
                            orderby r.CreatedAt, r.Id
                            select new SellerReservationResponse(r.Id, r.CampaignId, r.Quantity, r.UnitPriceSnapshot, r.TotalPriceSnapshot, r.Status,
@@ -111,7 +111,7 @@ public sealed partial class Marketplace
         var campaign = await db.Campaigns.AsNoTracking().SingleOrDefaultAsync(c => c.Id == id && c.SellerId == seller.Id, ct) ?? throw Missing();
         var q = db.Reservations.Where(r => r.CampaignId == id);
         return new(OperationDto(campaign), await q.CountAsync(ct), await q.CountAsync(r => r.Status == ReservationStatus.Active, ct),
-            await q.CountAsync(r => r.Status == ReservationStatus.Cancelled, ct), await db.Pickups.CountAsync(p => p.CampaignId == id && p.Status == PickupStatus.Collected, ct),
+            await q.CountAsync(r => r.Status == ReservationStatus.Cancelled, ct), await PhysicalPickupRows.CountAsync(p => p.CampaignId == id && p.Status == PickupStatus.Collected, ct),
             await q.Where(r => r.Status == ReservationStatus.Completed).SumAsync(r => r.TotalPriceSnapshot, ct));
     }
 
@@ -179,7 +179,7 @@ public sealed partial class Marketplace
         var r = await db.Reservations.AsNoTracking().SingleOrDefaultAsync(r => r.Id == id && r.CustomerUserId == actor.UserId, ct) ?? throw Missing();
         var c = await db.Campaigns.AsNoTracking().SingleAsync(c => c.Id == r.CampaignId, ct);
         var location = await db.Locations.AsNoTracking().SingleAsync(l => l.Id == c.SellerLocationId, ct);
-        var pickupId = await db.Pickups.Where(p => p.ReservationId == r.Id).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
+        var pickupId = await PhysicalPickupRows.Where(p => p.ReservationId == r.Id).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
         return new(ReservationDto(r, c), c.Status, Pickup(location), c.ConfirmationDeadlineUtc, c.PickupDeadlineUtc, pickupId,
             pickupId != null ? "ViewPickup" : r.Status != ReservationStatus.Active ? "None" : c.Status == CampaignStatus.Open && clock.GetUtcNow() < c.ExpiresAtUtc ? "WaitForTargetOrCancel" : "WaitForSellerConfirmation", c.UsesTierPricing ? "ProviderPaymentTracked" : "NotTracked");
     }
@@ -193,13 +193,13 @@ public sealed partial class Marketplace
         return new(p.Id, p.ReservationId, p.CampaignId, p.Status, r.Quantity, r.TotalPriceSnapshot, p.Instructions, p.DeadlineUtc, p.PaymentPolicy, paid ? "ViewPilotFulfillment" : action, paid, fulfillmentId);
     }
 
-    public async Task<PickupDetailResponse> CustomerPickup(Actor actor, Guid id, CancellationToken ct) => await PickupDto(await db.Pickups.AsNoTracking().SingleOrDefaultAsync(p => p.Id == id && p.CustomerUserId == actor.UserId, ct) ?? throw Missing(), ct);
+    public async Task<PickupDetailResponse> CustomerPickup(Actor actor, Guid id, CancellationToken ct) => await PickupDto(await PhysicalPickupRows.SingleOrDefaultAsync(p => p.Id == id && p.CustomerUserId == actor.UserId, ct) ?? throw Missing(), ct);
 
     public async Task<PageResponse<PickupDetailResponse>> Pickups(Actor actor, bool sellerView, PageRequest page, PickupStatus? status, CancellationToken ct)
     {
         Page(page); Require(status is null || Enum.IsDefined(status.Value), "Unknown pickup status.", 400);
         var sellerId = sellerView ? (await OwnedSeller(actor, ct)).Id : Guid.Empty;
-        var q = db.Pickups.AsNoTracking().Where(p => (sellerView ? p.SellerId == sellerId : p.CustomerUserId == actor.UserId) && (status == null || p.Status == status));
+        var q = PhysicalPickupRows.Where(p => (sellerView ? p.SellerId == sellerId : p.CustomerUserId == actor.UserId) && (status == null || p.Status == status));
         var items = new List<PickupDetailResponse>(); foreach (var p in await q.OrderBy(p => p.DeadlineUtc).ThenBy(p => p.Id).Skip(page.Offset).Take(page.PageSize).ToListAsync(ct)) items.Add(await PickupDto(p, ct));
         return new(items, page.Page, page.PageSize, await q.CountAsync(ct));
     }
@@ -207,7 +207,7 @@ public sealed partial class Marketplace
     // All pickup mutations lock seller -> campaign -> pickup, including customer code issuance.
     private async Task<(Seller Seller, GroupBuyCampaign Campaign, PickupRecord Pickup)> LockPickup(Actor actor, Guid id, bool customer, CancellationToken ct)
     {
-        var lookup = await db.Pickups.AsNoTracking().Where(p => p.Id == id && (customer ? p.CustomerUserId == actor.UserId : db.Sellers.Any(s => s.Id == p.SellerId && s.OwnerUserId == actor.UserId))).Select(p => new { p.SellerId, p.CampaignId }).SingleOrDefaultAsync(ct) ?? throw Missing();
+        var lookup = await PhysicalPickupRows.Where(p => p.Id == id && (customer ? p.CustomerUserId == actor.UserId : db.Sellers.Any(s => s.Id == p.SellerId && s.OwnerUserId == actor.UserId))).Select(p => new { p.SellerId, p.CampaignId }).SingleOrDefaultAsync(ct) ?? throw Missing();
         var seller = await LockSeller(lookup.SellerId, ct); var campaign = await LockCampaign(lookup.CampaignId, ct);
         var pickup = await db.Pickups.FromSqlInterpolated($"SELECT * FROM pickup_records WHERE \"Id\" = {id} FOR UPDATE").SingleAsync(ct);
         await db.Entry(pickup).ReloadAsync(ct);
